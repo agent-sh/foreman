@@ -1,8 +1,9 @@
 ---
 name: foreman
-description: "Use when working a repo's GitHub issue queue with native subagents: pick the next ready issue, claim it, spawn a worktree worker from its brief, read Revuto's findings, and land the PR. Driven by scripts/foreman.js; GitHub issues are the only state."
-version: 0.1.0
+description: "Use when user asks to work the issue queue, run foreman, pick the next issue or land ready PRs. Works a repo's GitHub issue queue with native subagents: pick, claim, a worktree worker per issue, Revuto's findings, land. Claims, comments and merges, so only an explicit /foreman starts it."
+version: 0.1.1
 argument-hint: "[status|stats|ISSUE]"
+disable-model-invocation: true
 ---
 
 # foreman
@@ -14,11 +15,12 @@ The main session runs this loop. `scripts/foreman.js` does every deterministic s
 ## Start
 1. `F doctor`. If `[ERROR] labels`, run `F doctor --fix`. Any other `[ERROR]` stops the loop: report it.
 2. Choose a session tag: 4 random hex digits. Agent IDs are `<tag>-<issue>`, for example `k3f9-992`.
+3. Adopt work that has no foreman claim. This covers an issue in in-progress, review or rework from another queue, or one a worker started outside foreman. Run `F adopt N --agent <tag>-N --branch <its branch>`. Add `--status review` when its PR is open, then continue at Review. Never release and re-claim it instead.
 
 ## Loop
 Repeat until `pick` exits 1 and no worker is running.
 1. `F capacity`. On exit 1, do not spawn. Wait for a running worker's report, or run `waitfor --until 'F capacity' --every 2m --timeout 30m` in the background.
-2. `F pick --json`. On exit 1, nothing is ready. If no worker is running, report the `skipped` counts and stop.
+2. `F pick --json`. On exit 1, nothing is ready. If no worker is running, report the `skipped` counts and stop. pick skips a ready issue that already has an open PR (`linked`). Adopt it with `--status review` and take it through Review and Land.
 3. `F claim N --agent <tag>-N --branch foreman/N`. On exit 2, go back to step 2: the issue now counts as claimed. Stop after 3 refusals in a row.
 4. `F brief N`. Spawn one Agent: `isolation: "worktree"`, `run_in_background: true`, and the prompt set to brief's stdout verbatim. Do not shorten it or add to it.
 5. Go back to step 1 at once. Workers run in parallel. `capacity` counts every live claim, so all sessions together stay within `agents_max`.

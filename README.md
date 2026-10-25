@@ -38,8 +38,9 @@ Needs Node 22+, `gh` (logged in) and `git`. The skill waits with `waitfor`; `run
 | Command | What it does |
 |---|---|
 | `doctor [--fix]` | Checks node, gh auth, git, the repo, the config, the labels (`--fix` creates missing ones), the commands, and the attribution setting. |
-| `pick` | The next ready issue: urgent first, then oldest. Skips held, decision, blocked and claimed issues, and any whose `Depends on` issues are open. Prints why, or why nothing is ready. |
+| `pick` | The next ready issue: urgent first, then oldest. Skips held, decision, blocked and claimed issues, any whose `Depends on` issues are open, and any with an open PR (a closing reference, or an open PR on its last claim branch or `foreman/N`; one batched query). Prints why, or why nothing is ready. |
 | `claim N --agent ID --branch B` | Assigns, swaps ready for in-progress, and posts a claim comment. Idempotent for the same agent. Refuses a live claim by another agent; the first claim comment wins a race. |
+| `adopt N --agent ID --branch B [--status in-progress\|review]` | Claims an issue already in in-progress, review or rework that has no foreman claim (moved in from another queue, or started outside foreman). Posts the claim marker, assigns, and sets the status (default in-progress). Idempotent for the same agent; refuses a live claim by another agent and a ready issue. |
 | `release N --to ready\|rework\|held\|blocked\|review --reason R` | Moves the issue and comments why. Every target except review ends the claim. |
 | `stale [--retake [--keep TAG]]` | Claims with no push and no comment for `stale_claim_hours`. `--retake` sends in-progress ones to ready and review ones to rework; `--keep TAG` spares agents named `TAG-*`. |
 | `capacity [--local K]` | load1, CPU pressure (PSI), available memory, live claims plus K local agents. Exit 0 when a spawn may start, 1 when not. On a host without PSI the pressure gate is skipped and the output says so. |

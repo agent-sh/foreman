@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-26
+
+### Added
+
+- `adopt N --agent ID --branch B [--status in-progress|review]` claims an issue that is already in progress, in review or in rework with no foreman claim. Before, this took release to ready, claim, and release to review.
+
+### Changed
+
+- `pick` skips a ready issue that already has an open PR, and lists it under `linked` as "has open PR #P". The link is a closing reference, or an open PR on the issue's last claim branch or `foreman/N`. One batched GraphQL query covers all candidates. Before, pick could choose an issue whose PR was approved and in a land check.
+- The foreman skill sets `disable-model-invocation: true`: the loop claims, comments and merges, so only an explicit `/foreman` starts it. Its description gains a "Use when user asks" trigger.
+- `/foreman` validates its arguments, and states its report format, with an example, and what it checks before reporting.
+- `.agnix.toml` turns off CC-SK-017 (the `version` frontmatter field), as the other agent-sh plugins do. agnix and agentsys's enhance analyzers report no findings on the plugin.
+
 ## [0.1.0] - 2026-10-26
 
 ### Added
