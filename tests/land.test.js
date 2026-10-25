@@ -73,7 +73,7 @@ test('land: refuses a moved head, a cancelled check, a red check; waits on pendi
   const ci = (conclusion, status = 'COMPLETED') => landSetup({ pr: { checkRuns: [{ name: 'ci', status, conclusion }, prFixture().checkRuns[1]] } });
   for (const [t, code, want] of [
     [ci('CANCELLED'), 2, /ci=CANCELLED/], [ci('FAILURE'), 2, /ci=FAILURE/], [ci('', 'IN_PROGRESS'), 1, /pending: ci=IN_PROGRESS/],
-    [landSetup({ pr: { checkRuns: [prFixture().checkRuns[1]] } }), 1, /no checks/]
+    [landSetup({ pr: { checkRuns: [prFixture().checkRuns[1]] } }), 2, /no checks at aaaaaaa.*allow_no_checks/]
   ]) {
     const x = land(t);
     assert.equal(x.code, code, x.stderr);
@@ -81,6 +81,47 @@ test('land: refuses a moved head, a cancelled check, a red check; waits on pendi
     assert.equal(t.fx().merged, undefined);
     assert.equal(t.runs(), 0);
   }
+});
+
+test('land: allow_no_checks lands a PR with zero checks on the land command and findings', () => {
+  const t = landSetup({ config: { allow_no_checks: true }, pr: { checkRuns: [prFixture().checkRuns[1]] } });
+  const r = land(t);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(t.runs(), 1);
+  const red = landSetup({ config: { allow_no_checks: true }, pr: { checkRuns: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }, prFixture().checkRuns[1]] } });
+  assert.equal(land(red).code, 2, 'a red check still refuses');
+});
+
+test('land: the squash body drops only attribution trailers and the Claude Code footer', () => {
+  const t = landSetup({
+    pr: {
+      commits: [{
+        oid: HEAD, messageHeadline: 'Regenerate the API docs',
+        messageBody: [
+          'Docs generated with gen-docs from the schema.', '',
+          '\u{1F916} Generated with [Claude Code](https://claude.com/claude-code)',
+          'Generated with [Claude Code](https://claude.com/claude-code)',
+          'Generated with Claude Code',
+          '  co-authored-by: Someone <x@y>',
+          'Co-Authored-By: Claude <noreply@anthropic.com>'
+        ].join('\n')
+      }]
+    }
+  });
+  assert.equal(land(t).code, 0);
+  assert.equal(t.fx().merged.body, 'Regenerate the API docs\n\nDocs generated with gen-docs from the schema.');
+});
+
+test('land: merge_admin adds --admin to the merge; the other guards still apply', () => {
+  const plain = landSetup();
+  assert.equal(land(plain).code, 0);
+  assert.ok(!plain.fx().merged.args.includes('--admin'));
+  const admin = landSetup({ config: { merge_admin: true } });
+  assert.equal(land(admin).code, 0);
+  assert.ok(admin.fx().merged.args.includes('--admin'));
+  const guarded = landSetup({ config: { merge_admin: true }, pr: { reviewThreads: [finding()] } });
+  assert.equal(land(guarded).code, 2);
+  assert.equal(guarded.fx().merged, undefined);
 });
 
 test('land: an unaddressed Revuto finding refuses; a reply addresses it', () => {

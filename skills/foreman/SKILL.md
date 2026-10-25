@@ -36,7 +36,7 @@ Every hour of the loop, run `F stale --retake --keep <tag>`. It releases stale c
 - **Follow-ups** in the report become new issues: `gh issue create --label status:ready --body-file FILE`, with a `Depends on: #N` line when they need this PR. They never go into the current PR.
 
 ## Review
-Revuto reviews every push on its own. Its rounds are capped per PR (3 by default).
+Revuto reviews every push on its own. Its rounds are capped per PR (`review.rounds_max`, 3 by default).
 1. Wait for its round: `waitfor --until 'F land N --pr P --head SHA --gate' --every 3m --timeout 40m --fail-after 1`. Here SHA is the PR head. When waitfor fails, run the gate once without waitfor to read the refusal.
 2. Read the round with `F findings P`. Then:
    - **Real finding** (P0-P2, or unrated): fix it. Run `F brief N --pr P` and spawn a worker as in Loop step 4, on the same branch. After the push, Revuto runs a new round. Go to step 1.
@@ -57,6 +57,7 @@ Revuto reviews every push on its own. Its rounds are capped per PR (3 by default
    - **Head moved:** read `findings` again, then land with the new SHA.
    - **Check red:** run `F release N --to rework --reason "<check>: <failure>"`.
    - **Check cancelled:** rerun it once with `gh run rerun <run-id> --failed`. A cancelled check is never green.
+   - **No checks at the head:** CI may not have started. Run the gate again once, a few minutes later. If there are still no checks, report it: only the repo's `allow_no_checks` setting lets such a PR land.
    - **Unaddressed finding:** go to Review step 2.
    - **Forbidden words:** rewrite the comment.
    - **Main moved twice:** land again later.

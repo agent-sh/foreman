@@ -32,6 +32,9 @@ test('config: errors name the key; unknown keys and bad values are refused', () 
     [{ comment_forbidden: '(' }, /comment_forbidden is not a valid regex/],
     [{ review: { rounds_max: 0 } }, /review\.rounds_max must be an integer >= 1/],
     [{ long_runs: 'sh -c {cmd}' }, /long_runs must contain \{unit\}, \{cmd\} and \{log\}/],
+    [{ merge_admin: 'yes' }, /merge_admin must be true or false/],
+    [{ allow_no_checks: 1 }, /allow_no_checks must be true or false/],
+    [{ cpu_pressure_hold: 120 }, /cpu_pressure_hold must be a number from 0 to 100/],
     ['{ not json', /not valid JSON/]
   ];
   for (const [config, want] of cases) {

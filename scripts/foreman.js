@@ -43,14 +43,17 @@ const DEFAULTS = Object.freeze({
   depends_pattern: 'Depends on: (.*)',
   agents_max: 6,
   load_hold: 20,
+  cpu_pressure_hold: 60,
   mem_min_gb: 4,
   stale_claim_hours: 6,
   scratch: '~/.cache/{repo}/{issue}',
   check: null,
   land: null,
   required_checks: [],
+  allow_no_checks: false,
+  merge_admin: false,
   review: {
-    app: 'revuto-review', rounds_max: 4, no_new_round_for_lows: true,
+    app: 'revuto-review', rounds_max: 3, no_new_round_for_lows: true,
     trivial_merge: ['title', 'docs', 'small clear fix'],
     // Revuto polls every 30 minutes besides its webhook, so a head with no
     // review check after 45 minutes is taken as unavailable.
@@ -117,6 +120,12 @@ function validateConfig(raw, source = '.foreman.json') {
   num('agents_max', (v) => Number.isInteger(v) && v >= 1, 'must be an integer >= 1');
   num('load_hold', (v) => v > 0, 'must be a number > 0');
   num('mem_min_gb', (v) => v >= 0, 'must be a number >= 0');
+  num('cpu_pressure_hold', (v) => v >= 0 && v <= 100, 'must be a number from 0 to 100');
+  for (const key of ['allow_no_checks', 'merge_admin']) {
+    if (!(key in raw)) continue;
+    if (typeof raw[key] !== 'boolean') err(key, `must be true or false (got ${JSON.stringify(raw[key])})`);
+    else out[key] = raw[key];
+  }
   num('stale_claim_hours', (v) => v > 0, 'must be a number > 0');
 
   const str = (key, nullable, extra) => {
@@ -561,6 +570,8 @@ function load1() {
 }
 
 function cpuPressure() {
+  const env = process.env.FOREMAN_CPU_PRESSURE;
+  if (env) return env === 'none' ? null : Number(env);
   try {
     const m = /^some avg10=([\d.]+)/m.exec(fs.readFileSync('/proc/pressure/cpu', 'utf8'));
     return m ? Number(m[1]) : null;
@@ -568,16 +579,19 @@ function cpuPressure() {
 }
 
 function capacityFrom(config, claims, local) {
-  const load = load1(); const mem = memAvailableGb();
+  const load = load1(); const mem = memAvailableGb(); const psi = cpuPressure();
   const agents = claims + local;
   const holds = [];
   if (agents >= config.agents_max) holds.push(`${agents} agents running, max ${config.agents_max}`);
   if (load >= config.load_hold) holds.push(`load1 ${load.toFixed(1)} >= ${config.load_hold}`);
-  if (mem <= config.mem_min_gb) holds.push(`${mem.toFixed(1)} GB available <= ${config.mem_min_gb} GB`);
+  // PSI "some avg10": the share of the last 10 s in which a task waited for CPU.
+  if (psi !== null && psi >= config.cpu_pressure_hold) holds.push(`cpu pressure ${psi} >= ${config.cpu_pressure_hold}`);
+  if (mem < config.mem_min_gb) holds.push(`${mem.toFixed(1)} GB available < ${config.mem_min_gb} GB`);
   return {
     load1: Number(load.toFixed(2)), load_hold: config.load_hold,
+    cpu_pressure: psi, cpu_pressure_hold: config.cpu_pressure_hold,
+    cpu_pressure_gate: psi === null ? 'skipped: no /proc/pressure/cpu on this host' : 'on',
     mem_available_gb: Number(mem.toFixed(2)), mem_min_gb: config.mem_min_gb,
-    cpu_pressure_avg10: cpuPressure(),
     claims, local, agents, agents_max: config.agents_max,
     slots: Math.max(0, config.agents_max - agents),
     may_spawn: holds.length === 0, holds
@@ -588,7 +602,8 @@ function cmdCapacity(ctx, opts) {
   const local = opts.local === undefined ? 0 : needInt(opts.local, '--local');
   const claims = listIssues(ctx, ctx.config.labels.in_progress, 'number').length;
   const c = capacityFrom(ctx.config, claims, local);
-  const text = `${c.may_spawn ? 'spawn ok' : 'hold'}: load1 ${c.load1}/${c.load_hold}, mem ${c.mem_available_gb} GB (min ${c.mem_min_gb}), agents ${c.agents}/${c.agents_max} (${c.claims} claims + ${c.local} local)` +
+  const pressure = c.cpu_pressure === null ? 'cpu pressure skipped (no PSI)' : `cpu pressure ${c.cpu_pressure}/${c.cpu_pressure_hold}`;
+  const text = `${c.may_spawn ? 'spawn ok' : 'hold'}: load1 ${c.load1}/${c.load_hold}, ${pressure}, mem ${c.mem_available_gb} GB (min ${c.mem_min_gb}), agents ${c.agents}/${c.agents_max} (${c.claims} claims + ${c.local} local)` +
     (c.holds.length ? `\n  hold: ${c.holds.join('; ')}` : '');
   return { code: c.may_spawn ? EXIT.OK : EXIT.NOT_NOW, result: c, text };
 }
@@ -893,9 +908,12 @@ function classifyChecks(rollup, config) {
   return out;
 }
 
+// The Claude Code footer, with or without the emoji, the link or the brackets.
+const CLAUDE_FOOTER = /^\s*(?:\u{1F916}\s*)?generated with \[?claude code\]?(?:\([^)]*\))?\.?\s*$/iu;
+
 function stripAttribution(text) {
   return text.split('\n')
-    .filter((l) => !/^\s*co-authored-by:/i.test(l) && !/generated with/i.test(l))
+    .filter((l) => !/^\s*co-authored-by:/i.test(l) && !CLAUDE_FOOTER.test(l))
     .join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -903,6 +921,8 @@ function lsRemote(ctx, branch) {
   const out = git(['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: ctx.root });
   return out.split(/\s+/)[0] || null;
 }
+
+const head7 = (p) => p.headRefOid.slice(0, 7);
 
 const PR_FIELDS = 'number,title,state,url,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,commits';
 
@@ -918,7 +938,9 @@ function landGates(ctx, n, opts) {
   const total = checks.green.length + checks.pending.length + checks.bad.length;
   if (checks.bad.length) throw new Refusal(`PR #${pr} checks not green at ${p.headRefOid.slice(0, 7)}: ${checks.bad.map((c) => `${c.name}=${c.state}`).join(', ')}`, EXIT.REFUSED, { checks });
   if (checks.pending.length) throw new Refusal(`PR #${pr} checks pending: ${checks.pending.map((c) => `${c.name}=${c.state}`).join(', ')}`, EXIT.NOT_NOW, { checks });
-  if (!total) throw new Refusal(`PR #${pr} has no checks at ${p.headRefOid.slice(0, 7)}; CI may not have started`, EXIT.NOT_NOW, { checks });
+  if (!total && !ctx.config.allow_no_checks) {
+    throw new Refusal(`PR #${pr} has no checks at ${head7(p)}. If CI has not started yet, run the gate again in a few minutes; a repo without CI sets allow_no_checks`, EXIT.REFUSED, { checks });
+  }
   if (p.mergeable === 'CONFLICTING') throw new Refusal(`PR #${pr} conflicts with ${p.baseRefName}`);
   if (p.mergeable !== 'MERGEABLE') throw new Refusal(`PR #${pr} mergeable state is ${p.mergeable}; GitHub is still computing it`, EXIT.NOT_NOW);
   const findings = readFindings(ctx, pr);
@@ -952,8 +974,6 @@ function landGates(ctx, n, opts) {
   }
   return { pr, p, checks, findings, open };
 }
-
-const head7 = (p) => p.headRefOid.slice(0, 7);
 
 function cmdLand(ctx, opts) {
   const n = needInt(opts._[0], 'issue number');
@@ -994,7 +1014,7 @@ function cmdLand(ctx, opts) {
   // Step 3 and 4: post the review comment, then squash at the exact head.
   if (commentText) gh(['pr', 'comment', String(pr), ...ctx.R, '--body-file', '-'], { input: commentText });
   const body = stripAttribution((p.commits || []).map((c) => [c.messageHeadline, c.messageBody].filter(Boolean).join('\n\n')).join('\n\n'));
-  gh(['pr', 'merge', String(pr), ...ctx.R, '--squash', '--match-head-commit', head,
+  gh(['pr', 'merge', String(pr), ...ctx.R, '--squash', '--match-head-commit', head, ...(ctx.config.merge_admin ? ['--admin'] : []),
     '--subject', `${p.title} (#${pr})`, '--body-file', '-'], { input: body });
   const merged = ghJson(['pr', 'view', String(pr), ...ctx.R, '--json', 'mergeCommit,state']);
   const mergeSha = merged.mergeCommit && merged.mergeCommit.oid;

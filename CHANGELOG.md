@@ -19,3 +19,15 @@
   - `stats` counts them.
 - `skills/foreman/SKILL.md` and `/foreman`: the loop a main session follows, with worktree workers and no reviewer subagent.
 - `.foreman.example.json`, and tests that run against fake `gh` and `git`.
+- Config `cpu_pressure_hold` (default 60). `capacity` holds at CPU pressure (PSI `some avg10`) at or above it, and skips that gate on hosts without PSI.
+- Config `allow_no_checks` (default false). A PR with zero checks lands only when it is true. Otherwise land refuses it instead of waiting.
+- Config `merge_admin` (default false). When true, land merges with `--admin`, and every other guard still applies.
+
+### Changed
+
+- `review.rounds_max` defaults to 3, Revuto's deployed cap.
+- `capacity` holds only when memory is below `mem_min_gb`, not at it.
+
+### Fixed
+
+- The squash body keeps commit lines that say "generated with", such as "docs generated with gen-docs". Only Co-Authored-By trailers and the Claude Code footer are dropped.

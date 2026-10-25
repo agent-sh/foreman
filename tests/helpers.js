@@ -45,7 +45,7 @@ function run(dir, args, env, input) {
     ...process.env,
     PATH: `${path.join(FAKES, 'bin')}${path.delimiter}${process.env.PATH}`,
     FAKE_FIXTURE: path.join(dir, 'fixture.json'),
-    FOREMAN_LOAD1: '1', FOREMAN_MEM_GB: '32',
+    FOREMAN_LOAD1: '1', FOREMAN_MEM_GB: '32', FOREMAN_CPU_PRESSURE: '0',
     ...env
   };
   if (process.platform === 'win32') { e.FOREMAN_GH = path.join(FAKES, 'gh.js'); e.FOREMAN_GIT = path.join(FAKES, 'git.js'); }

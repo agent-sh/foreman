@@ -58,6 +58,13 @@ test('findings: capped by the cap check summary, by the final-review heading, or
   final.reviews.push({ ...review(9, HEAD, ago(1)), body: `${SIGNED}\n\n---\n\n**Revuto final review (round cap reached)**\n\nDone.` });
   assert.equal(setup({ fixture: { prs: [final] } }).run(['findings', '7', '--json']).json.capped, true);
 
+  // Default rounds_max is 3, Revuto's deployed cap; a repo may raise it.
+  const three = prWith();
+  three.reviews.push(review(8, HEAD, ago(1)));
+  const byDefault = setup({ fixture: { prs: [three] } }).run(['findings', '7', '--json']).json;
+  assert.deepEqual([byDefault.rounds, byDefault.capped, byDefault.cap_reason], [3, true, '3 rounds used, rounds_max 3']);
+  assert.equal(setup({ config: { review: { rounds_max: 4 } }, fixture: { prs: [three] } }).run(['findings', '7', '--json']).json.capped, false);
+
   const byMax = setup({ config: { review: { rounds_max: 2 } }, fixture: { prs: [prWith()] } }).run(['findings', '7', '--json']).json;
   assert.equal(byMax.capped, true);
   assert.equal(byMax.cap_reason, '2 rounds used, rounds_max 2');
