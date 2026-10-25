@@ -29,6 +29,7 @@ test('config: errors name the key; unknown keys and bad values are refused', () 
     [{ agents_max: '6' }, /agents_max must be an integer >= 1 \(got "6"\)/],
     [{ load_hold: '20' }, /load_hold must be a number > 0 \(got "20"\)/],
     [{ depends_pattern: 'Depends on: .*' }, /depends_pattern needs one capture group/],
+    [{ branch_pattern: '^Branch: .*' }, /branch_pattern needs one capture group/],
     [{ comment_forbidden: '(' }, /comment_forbidden is not a valid regex/],
     [{ review: { rounds_max: 0 } }, /review\.rounds_max must be an integer >= 1/],
     [{ long_runs: 'sh -c {cmd}' }, /long_runs must contain \{unit\}, \{cmd\} and \{log\}/],

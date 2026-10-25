@@ -41,6 +41,7 @@ const DEFAULTS = Object.freeze({
     urgent: 'priority:urgent', decision: 'decision'
   },
   depends_pattern: 'Depends on: (.*)',
+  branch_pattern: '^Branch:\\s*`?([^`\\s]+)`?',
   agents_max: 6,
   load_hold: 20,
   cpu_pressure_hold: 60,
@@ -140,10 +141,11 @@ function validateConfig(raw, source = '.foreman.json') {
   const regex = (groups) => (v) => {
     let re;
     try { re = new RegExp(v); } catch (e) { return `is not a valid regex: ${e.message}`; }
-    if (groups && new RegExp(`${re.source}|`).exec('').length - 1 < 1) return 'needs one capture group for the dependency list';
+    if (groups && new RegExp(`${re.source}|`).exec('').length - 1 < 1) return 'needs one capture group';
     return null;
   };
   str('depends_pattern', false, regex(true));
+  str('branch_pattern', false, regex(true));
   str('comment_forbidden', false, regex(false));
   str('scratch', false, (v) => (v.includes('{issue}') ? null : 'must contain {issue}'));
   str('check', true);
@@ -505,10 +507,69 @@ function staleness(ctx, issue, claim) {
   return { idleHours, stale: idleHours >= ctx.config.stale_claim_hours, lastActivity: new Date(last).toISOString(), pushed };
 }
 
+/** The branch to claim on: --branch, else the issue body's Branch: line, else foreman/N. */
+function resolveBranch(ctx, issue, opts, cur) {
+  let branch; let source;
+  if (opts.branch) { branch = opts.branch; source = '--branch'; }
+  else if (cur) { branch = cur.branch; source = 'the existing claim'; }
+  else {
+    const m = new RegExp(ctx.config.branch_pattern, 'mi').exec(issue.body || '');
+    if (m && m[1]) { branch = m[1]; source = 'the issue body\'s Branch: line'; }
+    else { branch = `foreman/${issue.number}`; source = 'default foreman/N'; }
+  }
+  if (!/^[\w./-]+$/.test(branch) || branch.includes('..')) throw new Refusal(`not a usable branch name: ${branch}`, EXIT.ERROR);
+  return { branch, source };
+}
+
+/**
+ * Commits on branch B that exist only on this machine: B has no remote ref but
+ * a local branch or worktree holds it, or the local B is ahead of the remote.
+ * Claiming over them would start new work beside unpushed old work.
+ */
+function unpushedWork(ctx, branch) {
+  const g = (args) => run('git', args, { cwd: ctx.root, allowFail: true });
+  const ls = g(['ls-remote', 'origin', `refs/heads/${branch}`]);
+  if (ls.status !== 0) return { skipped: `git ls-remote origin failed: ${(ls.stderr || '').trim().split('\n').pop()}` };
+  const remote = ls.stdout.trim().split(/\s+/)[0] || null;
+  const lb = g(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  const local = lb.status === 0 ? lb.stdout.trim() : null;
+  let tree = null;
+  const wl = g(['worktree', 'list', '--porcelain']);
+  if (wl.status === 0) {
+    for (const block of wl.stdout.split(/\n\s*\n/)) {
+      const f = Object.fromEntries(block.split('\n').filter(Boolean).map((l) => [l.split(' ')[0], l.slice(l.indexOf(' ') + 1)]));
+      if (f.branch === `refs/heads/${branch}` && path.resolve(f.worktree) !== path.resolve(ctx.root)) tree = { path: f.worktree, head: f.HEAD };
+    }
+  }
+  const tip = local || (tree && tree.head);
+  if (!tip || tip === remote) return { remote, local: tip, count: 0 };
+  let count = null;
+  if (remote) {
+    const r = g(['rev-list', '--count', `${remote}..${tip}`]);
+    if (r.status === 0) count = Number(r.stdout.trim());
+  }
+  if (count === null) {
+    // The remote tip is not in this clone, or there is no remote branch: count what no remote ref has.
+    const r = g(['rev-list', '--count', tip, '--not', '--remotes']);
+    count = r.status === 0 ? Number(r.stdout.trim()) : 0;
+  }
+  return { remote, local: tip, count, where: tree ? tree.path : null };
+}
+
+function checkUnpushed(ctx, branch, opts) {
+  const u = unpushedWork(ctx, branch);
+  if (u.skipped || !u.count) return u;
+  const dir = u.where || ctx.root;
+  if (!opts['allow-unpushed']) {
+    throw new Refusal(`unpushed work for ${branch} in ${u.where || `local branch ${branch}`}: push it first (git -C ${dir} push -u origin ${branch})`,
+      EXIT.REFUSED, { unpushed: u });
+  }
+  return u;
+}
+
 function cmdClaim(ctx, opts) {
   const n = needInt(opts._[0], 'issue number');
   const agent = need(opts.agent, '--agent');
-  const branch = need(opts.branch, '--branch');
   if (!/^[\w.-]+$/.test(agent)) throw new Refusal('--agent must be letters, digits, ".", "_" or "-"', EXIT.ERROR);
   const L = ctx.config.labels;
   const issue = viewIssue(ctx, n);
@@ -516,6 +577,7 @@ function cmdClaim(ctx, opts) {
   const has = names(issue);
   for (const k of ['held', 'decision', 'blocked']) if (has.includes(L[k])) throw new Refusal(`#${n} is ${L[k]}`);
   const cur = currentClaim(issue, L);
+  const { branch, source } = resolveBranch(ctx, issue, opts, cur && cur.agent === agent ? cur : null);
   if (cur) {
     if (cur.agent !== agent) {
       const s = staleness(ctx, issue, cur);
@@ -524,13 +586,19 @@ function cmdClaim(ctx, opts) {
     }
     if (cur.branch !== branch) throw new Refusal(`#${n} is already claimed by ${agent} on branch ${cur.branch}`);
     if (!has.includes(L.in_progress) && !has.includes(L.review)) setStatus(ctx, issue, L.in_progress, { assign: true });
-    return { result: { issue: n, agent, branch, already: true }, text: `#${n} already claimed by ${agent} on ${branch}` };
+    return { result: { issue: n, agent, branch, branch_source: source, already: true }, text: `#${n} already claimed by ${agent} on ${branch} (from ${source})` };
   }
-  if (has.includes(L.in_progress) || has.includes(L.review)) throw new Refusal(`#${n} is in progress with no foreman claim; release it first`);
+  if (has.includes(L.in_progress) || has.includes(L.review)) throw new Refusal(`#${n} is in progress with no foreman claim; adopt it instead`);
   if (!has.includes(L.ready) && !has.includes(L.rework)) throw new Refusal(`#${n} is not ${L.ready} or ${L.rework}`);
-  const at = postClaim(ctx, issue, { agent, branch }, L.in_progress, 'Claimed');
-  return { result: { issue: n, agent, branch, at, already: false }, text: `#${n} claimed by ${agent} on ${branch}` };
+  const u = checkUnpushed(ctx, branch, opts);
+  const at = postClaim(ctx, issue, { agent, branch, ...unpushedMark(u, opts) }, L.in_progress, 'Claimed');
+  return {
+    result: { issue: n, agent, branch, branch_source: source, at, already: false, branch_check: u.skipped || 'ok' },
+    text: `#${n} claimed by ${agent} on ${branch} (from ${source})${u.skipped ? `\n  branch check skipped: ${u.skipped}` : ''}`
+  };
 }
+
+const unpushedMark = (u, opts) => (opts['allow-unpushed'] && u.count ? { allow_unpushed: true, unpushed: u.count } : {});
 
 /** Post the claim marker, set the status label and assignee, and check the race. */
 function postClaim(ctx, issue, data, label, verb) {
@@ -556,7 +624,6 @@ const ADOPT_STATUS = { 'in-progress': 'in_progress', review: 'review' };
 function cmdAdopt(ctx, opts) {
   const n = needInt(opts._[0], 'issue number');
   const agent = need(opts.agent, '--agent');
-  const branch = need(opts.branch, '--branch');
   if (!/^[\w.-]+$/.test(agent)) throw new Refusal('--agent must be letters, digits, ".", "_" or "-"', EXIT.ERROR);
   const status = opts.status || 'in-progress';
   if (!ADOPT_STATUS[status]) throw new Refusal('--status must be in-progress or review', EXIT.ERROR);
@@ -566,17 +633,22 @@ function cmdAdopt(ctx, opts) {
   const has = names(issue);
   for (const k of ['held', 'decision', 'blocked']) if (has.includes(L[k])) throw new Refusal(`#${n} is ${L[k]}`);
   const cur = currentClaim(issue, L);
+  const { branch, source } = resolveBranch(ctx, issue, opts, cur && cur.agent === agent ? cur : null);
   if (cur) {
     if (cur.agent !== agent) throw new Refusal(`#${n} is claimed by ${cur.agent} on ${cur.branch} since ${cur.at}`, EXIT.REFUSED, { claim: cur });
     if (cur.branch !== branch) throw new Refusal(`#${n} is already claimed by ${agent} on branch ${cur.branch}`);
     if (!has.includes(label)) setStatus(ctx, issue, label, { assign: true });
-    return { result: { issue: n, agent, branch, status: label, already: true }, text: `#${n} already claimed by ${agent} on ${branch}` };
+    return { result: { issue: n, agent, branch, branch_source: source, status: label, already: true }, text: `#${n} already claimed by ${agent} on ${branch} (from ${source})` };
   }
   if (![L.in_progress, L.review, L.rework].some((l) => has.includes(l))) {
     throw new Refusal(`#${n} is ${has.includes(L.ready) ? `${L.ready}; use claim` : `not ${L.in_progress}, ${L.review} or ${L.rework}`}`);
   }
-  const at = postClaim(ctx, issue, { agent, branch, adopted: true }, label, 'Adopted');
-  return { result: { issue: n, agent, branch, status: label, at, already: false }, text: `#${n} adopted by ${agent} on ${branch} (${label})` };
+  const u = checkUnpushed(ctx, branch, opts);
+  const at = postClaim(ctx, issue, { agent, branch, adopted: true, ...unpushedMark(u, opts) }, label, 'Adopted');
+  return {
+    result: { issue: n, agent, branch, branch_source: source, status: label, at, already: false, branch_check: u.skipped || 'ok' },
+    text: `#${n} adopted by ${agent} on ${branch} (from ${source}, ${label})${u.skipped ? `\n  branch check skipped: ${u.skipped}` : ''}`
+  };
 }
 
 const RELEASE_TARGETS = ['ready', 'rework', 'held', 'blocked', 'review'];
@@ -1257,8 +1329,8 @@ function cmdScan(ctx, opts) {
 const USAGE = `usage: foreman <command> [--json] [--repo OWNER/NAME] [--config FILE]
   doctor [--fix]                          gh, git, repo, config, labels, commands
   pick                                    the next ready issue, or why none is
-  claim N --agent ID --branch B           claim an issue for an agent
-  adopt N --agent ID --branch B [--status in-progress|review]   claim an issue already in progress with no foreman claim
+  claim N --agent ID [--branch B] [--allow-unpushed]   claim an issue; the branch defaults to the body's Branch: line, else foreman/N
+  adopt N --agent ID [--branch B] [--status in-progress|review] [--allow-unpushed]   claim an issue already in progress with no foreman claim
   release N --to ${RELEASE_TARGETS.join('|')} --reason R
   stale [--retake [--keep TAG]]           claims with no push or comment for stale_claim_hours
   capacity [--local K]                    may a spawn start now (exit 0) or not (exit 1)
@@ -1273,7 +1345,7 @@ const USAGE = `usage: foreman <command> [--json] [--repo OWNER/NAME] [--config F
   scan [FILE|-]                           check text against comment_forbidden
 exit: 0 done, 1 not now, 2 refused, 3 error`;
 
-const BOOL = new Set(['json', 'fix', 'retake', 'gate', 'decided-by-session', 'trivial', 'help']);
+const BOOL = new Set(['json', 'fix', 'retake', 'gate', 'decided-by-session', 'trivial', 'allow-unpushed', 'help']);
 
 function parseArgs(argv) {
   const opts = { _: [], cmd: [] };
@@ -1330,6 +1402,6 @@ function main(argv) {
   }
 }
 
-module.exports = { validateConfig, parseDepends, scanText, classifyChecks, stripAttribution, DEFAULTS, EXIT };
+module.exports = { validateConfig, unpushedWork, parseDepends, scanText, classifyChecks, stripAttribution, DEFAULTS, EXIT };
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));

@@ -17,11 +17,11 @@ test('doctor: reports missing labels, and --fix creates exactly those', () => {
 });
 
 test('doctor: fails on gh auth and on a check command that does not resolve', () => {
-  const t = setup({ fixture: { auth: false }, config: { check: 'python3 tools/missing.py', land: 'no-such-binary-xyz {issue}' } });
+  const t = setup({ fixture: { auth: false }, config: { check: 'node tools/missing.js', land: 'no-such-binary-xyz {issue}' } });
   const r = t.run(['doctor', '--json']);
   assert.equal(r.code, 2);
   const by = Object.fromEntries(r.json.checks.map((c) => [c.what, c]));
   assert.equal(by['gh auth'].level, 'ERROR');
-  assert.match(by.check.msg, /tools\/missing\.py not found/);
+  assert.match(by.check.msg, /tools\/missing\.js not found/);
   assert.match(by.land.msg, /no-such-binary-xyz not found on PATH/);
 });

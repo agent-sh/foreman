@@ -10,6 +10,7 @@
     "decision": "decision"
   },
   "depends_pattern": "Depends on: (.*)",
+  "branch_pattern": "^Branch:\\s*`?([^`\\s]+)`?",
   "agents_max": 6,
   "load_hold": 20,
   "cpu_pressure_hold": 60,
