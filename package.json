@@ -1,0 +1,32 @@
+{
+  "name": "foreman",
+  "version": "0.1.0",
+  "description": "GitHub issues as a task queue for native agents: pick, claim, brief, review findings and land",
+  "author": {
+    "name": "Avi Fenesh",
+    "url": "https://github.com/avifenesh"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agent-sh/foreman.git"
+  },
+  "homepage": "https://github.com/agent-sh/foreman",
+  "keywords": [
+    "task-queue",
+    "github-issues",
+    "agents",
+    "subagents",
+    "merge-queue",
+    "automation"
+  ],
+  "bin": {
+    "foreman": "scripts/foreman.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
