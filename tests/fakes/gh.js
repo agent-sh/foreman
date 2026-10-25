@@ -145,6 +145,18 @@ if (a0 === 'api' && a1 === 'graphql') {
     }
     out({ data }); save(); process.exit(0);
   }
+  if (query.includes('closedByPullRequestsReferences')) {
+    const repo = {};
+    repo.prs = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: fx.prs.filter((p) => p.state === 'OPEN').map((p) => ({ number: p.number, headRefName: p.headRefName })) };
+    for (const [, n] of query.matchAll(/c(\d+): issue\(number:/g)) {
+      const i = issue(n);
+      repo[`c${n}`] = {
+        closedByPullRequestsReferences: { nodes: fx.prs.filter((p) => (p.closes || []).includes(Number(n)) && p.state === 'OPEN').map((p) => ({ number: p.number, state: p.state })) },
+        comments: { nodes: (i.comments || []).map((c) => ({ body: c.body })) }
+      };
+    }
+    out({ data: { repository: repo } }); save(); process.exit(0);
+  }
   if (query.includes('reviewThreads')) {
     const p = pr(vars.pr);
     out({

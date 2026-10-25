@@ -1,8 +1,9 @@
 ---
 name: foreman
-description: "Use when working a repo's GitHub issue queue with native subagents: pick the next ready issue, claim it, spawn a worktree worker from its brief, read Revuto's findings, and land the PR. Driven by scripts/foreman.js; GitHub issues are the only state."
-version: 0.1.0
+description: "Use when user asks to work the issue queue, run foreman, pick the next issue or land ready PRs. Works a repo's GitHub issue queue with native subagents: pick, claim, a worktree worker per issue, Revuto's findings, land. Claims, comments and merges, so only an explicit /foreman starts it."
+version: 0.1.1
 argument-hint: "[status|stats|ISSUE]"
+disable-model-invocation: true
 ---
 
 # foreman
@@ -14,12 +15,15 @@ The main session runs this loop. `scripts/foreman.js` does every deterministic s
 ## Start
 1. `F doctor`. If `[ERROR] labels`, run `F doctor --fix`. Any other `[ERROR]` stops the loop: report it.
 2. Choose a session tag: 4 random hex digits. Agent IDs are `<tag>-<issue>`, for example `k3f9-992`.
+3. Adopt work that has no foreman claim. This covers an issue in in-progress, review or rework from another queue, or one a worker started outside foreman. Run `F adopt N --agent <tag>-N`. Add `--status review` when its PR is open, then continue at Review. Never release and re-claim it instead.
 
 ## Loop
 Repeat until `pick` exits 1 and no worker is running.
 1. `F capacity`. On exit 1, do not spawn. Wait for a running worker's report, or run `waitfor --until 'F capacity' --every 2m --timeout 30m` in the background.
-2. `F pick --json`. On exit 1, nothing is ready. If no worker is running, report the `skipped` counts and stop.
-3. `F claim N --agent <tag>-N --branch foreman/N`. On exit 2, go back to step 2: the issue now counts as claimed. Stop after 3 refusals in a row.
+2. `F pick --json`. On exit 1, nothing is ready. If no worker is running, report the `skipped` counts and stop. pick skips a ready issue that already has an open PR (`linked`). Leave it to whoever owns that PR, and name it in your report.
+3. `F claim N --agent <tag>-N`. Pass `--branch B` only when the operator names one. Otherwise the branch is the issue body's `Branch:` line, else `foreman/N`, and the output says which. On exit 2:
+   - **`unpushed work for B in <path>`:** earlier commits for B exist only on this machine. Run the `git -C <path> push -u origin B` it prints, then claim again. Use `--allow-unpushed` only when the operator says that work is dead.
+   - **Any other refusal:** go back to step 2; the issue now counts as claimed. Stop after 3 refusals in a row.
 4. `F brief N`. Spawn one Agent: `isolation: "worktree"`, `run_in_background: true`, and the prompt set to brief's stdout verbatim. Do not shorten it or add to it.
 5. Go back to step 1 at once. Workers run in parallel. `capacity` counts every live claim, so all sessions together stay within `agents_max`.
 
@@ -31,7 +35,7 @@ Every hour of the loop, run `F stale --retake --keep <tag>`. It releases stale c
 - **Host-only steps** (user systemd bus, hardware, cloud CLIs): write them as exact commands to a file and run `F scan FILE`. Then post them with `gh issue comment N --body-file FILE`. The operator runs them and attaches the receipt paths.
 - **Pushed, and the check passed:**
   1. Write the PR body: `Closes #N`, what changed, the check result. No attribution lines. Run `F scan FILE`.
-  2. Open the PR: `gh pr create --head foreman/N --title "<issue title>" --body-file FILE`.
+  2. Open the PR: `gh pr create --head <B> --title "<issue title>" --body-file FILE`, where B is the claim's branch that `brief` printed.
   3. Run `F release N --to review --reason "PR #P at <sha7>"`.
 - **Follow-ups** in the report become new issues: `gh issue create --label status:ready --body-file FILE`, with a `Depends on: #N` line when they need this PR. They never go into the current PR.
 

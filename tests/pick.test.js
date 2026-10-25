@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setup, issue, ago } = require('./helpers');
+const { setup, issue, ago, claimBody } = require('./helpers');
 
 test('pick: urgent first, then the oldest; never held, decision or claimed', () => {
   const t = setup({
@@ -59,4 +59,36 @@ test('pick: nothing ready exits 1 with counts by reason; rework issues are picka
 
   const t2 = setup({ fixture: { issues: [issue(3, { labels: ['status:rework'] })] } });
   assert.equal(t2.run(['pick', '--json']).json.picked.number, 3);
+});
+
+test('pick: skips a ready issue with an open PR - closing reference, its claim branch, or foreman/N - in one query', () => {
+  const t = setup({
+    fixture: {
+      issues: [
+        issue(1, { createdAt: ago(90) }),
+        issue(2, { createdAt: ago(80) }),
+        issue(3, { createdAt: ago(70), comments: [
+          { createdAt: ago(60), body: claimBody('a1', 'tc/t3', ago(60)) },
+          { createdAt: ago(50), body: '<!-- foreman:release {"to":"ready"} -->\nMoved to status:ready: requeued' }
+        ] }),
+        issue(4, { createdAt: ago(60) }),
+        issue(5, { createdAt: ago(10) })
+      ],
+      prs: [
+        { number: 961, state: 'OPEN', headRefName: 'kv-078', closes: [1] },
+        { number: 962, state: 'OPEN', headRefName: 'foreman/2' },
+        { number: 963, state: 'OPEN', headRefName: 'tc/t3' },
+        { number: 964, state: 'MERGED', headRefName: 'old', closes: [4] },
+        { number: 965, state: 'CLOSED', headRefName: 'foreman/4' }
+      ]
+    }
+  });
+  const r = t.run(['pick', '--json']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.json.picked.number, 4);
+  assert.equal(r.json.skipped.has_open_pr, 3);
+  assert.deepEqual(r.json.linked.map((l) => [l.number, l.reason]), [[1, 'has open PR #961'], [2, 'has open PR #962'], [3, 'has open PR #963']]);
+  assert.match(t.run(['pick']).stdout, /#1 has open PR #961/);
+  const graphql = t.fx().calls.filter((c) => c.startsWith('api graphql'));
+  assert.equal(graphql.length, 2, 'one batched query per pick, not one per issue');
 });

@@ -1,0 +1,15 @@
+severity = "Warning"
+exclude = ["node_modules/**", ".git/**", "tests/.work/**"]
+target = "ClaudeCode"
+tools = []
+locale = "en"
+
+[rules]
+
+disabled_rules = [
+    "CC-SK-017",   # Intentional - version is a client-specific frontmatter field, as in the other agent-sh plugins
+]
+
+[tool_versions]
+
+[spec_revisions]

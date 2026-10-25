@@ -31,6 +31,7 @@ An agentsys plugin. `scripts/foreman.js` holds every deterministic step of the q
 ```bash
 npm test                              # node --test tests/*.test.js
 node scripts/foreman.js doctor        # against the repo in the current directory
+agnix --config .agnix.toml .          # agent config lint
 ```
 
 ## References

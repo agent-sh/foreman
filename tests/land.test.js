@@ -39,7 +39,7 @@ function landSetup({ pr = {}, refs = [M1], config = {}, fixture = {} } = {}) {
     },
     config: null
   });
-  const cfg = { scratch: path.join(t.dir, 'scratch', '{issue}'), land: 'echo ran >> "$FOREMAN_RECEIPTS/runs"', ...config };
+  const cfg = { scratch: path.join(t.dir, 'scratch', '{issue}'), land: `node -e "require('fs').appendFileSync(require('path').join(process.env.FOREMAN_RECEIPTS, 'runs'), 'ran\\n')"`, ...config };
   fs.writeFileSync(path.join(t.dir, '.foreman.json'), JSON.stringify(cfg));
   t.runs = () => { try { return fs.readFileSync(path.join(t.dir, 'scratch', '20', 'evidence', 'land-aaaaaaa', 'runs'), 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
   t.comment = (text) => { fs.writeFileSync(path.join(t.dir, 'comment.md'), text); return path.join(t.dir, 'comment.md'); };
@@ -162,7 +162,7 @@ test('land: main moving during the check reruns it once, and twice refuses', () 
 });
 
 test('land: a failing land command and a head pushed during the check refuse', () => {
-  const failing = landSetup({ config: { land: 'echo boom; exit 4' } });
+  const failing = landSetup({ config: { land: 'node -e "console.log(\'boom\'); process.exit(4)"' } });
   const r = land(failing);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /land command exit 4[\s\S]*boom/);

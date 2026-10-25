@@ -23,5 +23,22 @@ if (argv[0] === 'ls-remote') {
   if (sha) process.stdout.write(`${sha}\trefs/heads/${branch}\n`);
   process.exit(0);
 }
+const g = fx.git || {};
+if (argv[0] === 'rev-parse' && argv[1] === '--verify') {
+  const sha = (g.local || {})[argv.at(-1).replace('refs/heads/', '')];
+  if (sha) { process.stdout.write(`${sha}\n`); process.exit(0); }
+  process.exit(1);
+}
+if (argv[0] === 'worktree' && argv[1] === 'list') {
+  const main = `worktree ${process.cwd()}\nHEAD ${'1'.repeat(40)}\nbranch refs/heads/main\n`;
+  process.stdout.write([main, ...(g.worktrees || []).map((w) => `worktree ${w.path}\nHEAD ${w.head}\nbranch refs/heads/${w.branch}\n`)].join('\n'));
+  process.exit(0);
+}
+if (argv[0] === 'rev-list' && argv[1] === '--count') {
+  // rev-list --count REMOTE..LOCAL serves ahead["REMOTE..LOCAL"]; LOCAL --not --remotes serves unpushed[LOCAL].
+  const n = argv[2].includes('..') ? (g.ahead || {})[argv[2]] : (g.unpushed || {})[argv[2]];
+  process.stdout.write(`${n || 0}\n`);
+  process.exit(0);
+}
 process.stderr.write(`fake git: unsupported call: ${argv.join(' ')}\n`);
 process.exit(3);
