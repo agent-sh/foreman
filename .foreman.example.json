@@ -1,0 +1,31 @@
+{
+  "labels": {
+    "ready": "status:ready",
+    "blocked": "status:blocked",
+    "in_progress": "status:in-progress",
+    "rework": "status:rework",
+    "review": "status:review",
+    "held": "status:held",
+    "urgent": "priority:urgent",
+    "decision": "decision"
+  },
+  "depends_pattern": "Depends on: (.*)",
+  "agents_max": 6,
+  "load_hold": 20,
+  "mem_min_gb": 4,
+  "stale_claim_hours": 6,
+  "scratch": "~/.cache/{repo}/{issue}",
+  "check": "python3 tools/check.py",
+  "land": "sh tools/native-land-check.sh {issue} {pr} {head}",
+  "required_checks": ["CodeQL"],
+  "review": {
+    "app": "revuto-review",
+    "rounds_max": 4,
+    "no_new_round_for_lows": true,
+    "trivial_merge": ["title", "docs", "small clear fix"],
+    "wait_minutes": 45
+  },
+  "comment_forbidden": "worker|claude|fable|opus|worktree|manager|/home/",
+  "comment_allowed": ["owner-workers"],
+  "long_runs": "systemd-run --user --collect --same-dir -E PATH --unit={unit} sh -c '{cmd} > {log} 2>&1'"
+}
