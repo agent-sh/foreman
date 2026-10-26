@@ -1,7 +1,7 @@
 ---
 name: foreman
 description: "Use when user asks to work the issue queue, run foreman, pick the next issue or land ready PRs. Works a repo's GitHub issue queue with native subagents: pick, claim, a worktree worker per issue, Revuto's findings, land. Claims, comments and merges, so only an explicit /foreman starts it."
-version: 0.1.2
+version: 0.1.3
 argument-hint: "[status|stats|ISSUE]"
 disable-model-invocation: true
 ---
@@ -70,7 +70,7 @@ Revuto reviews every push on its own. Its rounds are capped per PR (`review.roun
 ## Rules
 - GitHub is the only state. Keep no local queue, list or cache. Re-read with `F status`.
 - Waits use `waitfor` with `--every 2m` or longer, because the GitHub quota is shared. Never write a sleep loop and never poll in a loop.
-- Commands longer than 10 minutes go through `F run-long --unit U --log L -- CMD`. Never `nohup` or `&`.
+- Commands longer than 10 minutes go through `F run-long --unit U --log L -- CMD`. Never `nohup` or `&`. Wait with `waitfor --until 'F run-long --status --unit U --log L' --fail-after 1 --every 1m --timeout 2h`, then read the result with `F run-long --status --unit U --log L`: exit 0 success, 1 running, 2 failed (the output names the exit code and signal), 3 unknown (unit gone, no exit code recorded). Never read the result from systemctl: a collected unit shows success even when the command failed.
 - Commits, PRs and comments carry no Co-Authored-By trailer or "Generated with" line.
 - Scope is frozen after the claim. Follow-ups are new issues.
 - When the loop ends, run `F status` and report it.
