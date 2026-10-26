@@ -1,6 +1,6 @@
 {
   "name": "foreman",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "GitHub issues as a task queue for native agents: pick, claim, brief, review findings and land",
   "author": {
     "name": "Avi Fenesh",

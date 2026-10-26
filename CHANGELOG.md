@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.5] - 2026-10-26
+
+### Fixed
+- `comment_allowed` phrases match across line breaks and any run of whitespace, so an allowed phrase that a commit message wraps (for example "user\nmanager's control directory") no longer trips the forbidden-word scan. Line numbers in refusals still point at the original text.
+
 ## [0.1.4] - Unreleased
 
 ### Fixed
