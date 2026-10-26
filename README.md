@@ -104,7 +104,7 @@ Optional, in the repo root, version-controlled. Every key has a default. Unknown
 | `review.trivial_merge` | `title`, `docs`, `small clear fix` | What `--trivial` covers. Shown in refusals. |
 | `review.wait_minutes` | 45 | Minutes without a review check on a head before the app counts as unavailable. Revuto also polls every 30 minutes. |
 | `comment_forbidden` | `worker\|claude\|fable\|opus\|worktree\|manager\|/home/` | Case-insensitive regex. Every comment foreman posts is scanned with it. |
-| `comment_allowed` | `[]` | Phrases removed before the scan, such as a product name. |
+| `comment_allowed` | `[]` | Phrases removed before the scan, such as a product name. A phrase matches across line breaks and any run of whitespace. |
 | `long_runs` | `systemd-run --user --collect --same-dir -E PATH --unit={unit} sh -c '{cmd} > {log} 2>&1'` | `{cmd}` (the wrapper script) and `{log}` are escaped to sit inside single quotes. For a `systemd-run` template, `$` is doubled, since systemd expands variables on the unit's command line. |
 
 Environment: `FOREMAN_GH` and `FOREMAN_GIT` point at other binaries (a `.js` path runs under node). `FOREMAN_LOAD1`, `FOREMAN_CPU_PRESSURE` (a number, or `none` for no PSI) and `FOREMAN_MEM_GB` override the host numbers, for containers and tests.

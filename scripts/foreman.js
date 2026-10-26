@@ -297,11 +297,20 @@ function currentClaim(issue, L) {
 /** Scan text with comment_forbidden after removing comment_allowed phrases. */
 function scanText(text, config) {
   const re = new RegExp(config.comment_forbidden, 'gi');
+  // An allowed phrase can wrap across a line break, so it is blanked in the whole
+  // text, with any run of whitespace between its words. Newlines stay, so line
+  // numbers still point at the original text.
+  let masked = text;
+  for (const a of config.comment_allowed) {
+    const words = a.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+    const src = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+    masked = masked.replace(new RegExp(src, 'gi'), (m) => m.replace(/[^\n]/g, ' '));
+  }
+  const lines = text.split('\n');
   const hits = [];
-  text.split('\n').forEach((line, i) => {
-    let l = line;
-    for (const a of config.comment_allowed) l = l.replace(new RegExp(a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
-    for (const m of l.matchAll(re)) if (m[0]) hits.push({ line: i + 1, match: m[0], text: line.trim().slice(0, 120) });
+  masked.split('\n').forEach((l, i) => {
+    for (const m of l.matchAll(re)) if (m[0]) hits.push({ line: i + 1, match: m[0], text: lines[i].trim().slice(0, 120) });
   });
   return hits;
 }
