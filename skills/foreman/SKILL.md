@@ -1,7 +1,7 @@
 ---
 name: foreman
 description: "Use when user asks to work the issue queue, run foreman, pick the next issue or land ready PRs. Works a repo's GitHub issue queue with native subagents: pick, claim, a worktree worker per issue, Revuto's findings, land. Claims, comments and merges, so only an explicit /foreman starts it."
-version: 0.1.3
+version: 0.1.4
 argument-hint: "[status|stats|ISSUE]"
 disable-model-invocation: true
 ---
@@ -63,7 +63,8 @@ Revuto reviews every push on its own. Its rounds are capped per PR (`review.roun
    - **Check cancelled:** rerun it once with `gh run rerun <run-id> --failed`. A cancelled check is never green.
    - **No checks at the head:** CI may not have started. Run the gate again once, a few minutes later. If there are still no checks, report it: only the repo's `allow_no_checks` setting lets such a PR land.
    - **Unaddressed finding:** go to Review step 2.
-   - **Forbidden words:** rewrite the comment.
+   - **Forbidden words in the comment:** rewrite the comment.
+   - **Forbidden words in the squash subject or body:** the message names the PR title or the commit. Retitle with `gh pr edit P --title "..."`. For a commit, run `F release N --to rework --reason "reword commit <sha7>"`.
    - **Main moved twice:** land again later.
    - **Land command failed:** read the log path it printed, then send the issue to rework.
 
@@ -72,5 +73,6 @@ Revuto reviews every push on its own. Its rounds are capped per PR (`review.roun
 - Waits use `waitfor` with `--every 2m` or longer, because the GitHub quota is shared. Never write a sleep loop and never poll in a loop.
 - Commands longer than 10 minutes go through `F run-long --unit U --log L -- CMD`. Never `nohup` or `&`. Wait with `waitfor --until 'F run-long --status --unit U --log L' --fail-after 1 --every 1m --timeout 2h`, then read the result with `F run-long --status --unit U --log L`: exit 0 success, 1 running, 2 failed (the output names the exit code and signal), 3 unknown (unit gone, no exit code recorded). Never read the result from systemctl: a collected unit shows success even when the command failed.
 - Commits, PRs and comments carry no Co-Authored-By trailer or "Generated with" line.
+- Merges into a branch are named plainly: `git merge -m "Merge origin/main" origin/main`. `brief` tells workers the same. A default merge message names the checkout. land leaves merge commits out of the squash body and scans the rest.
 - Scope is frozen after the claim. Follow-ups are new issues.
 - When the loop ends, run `F status` and report it.

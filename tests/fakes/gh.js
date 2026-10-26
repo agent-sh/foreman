@@ -100,10 +100,7 @@ if (a0 === 'issue' && a1 === 'close') { issue(argv[2]).state = 'CLOSED'; save();
 
 if (a0 === 'pr' && a1 === 'view') {
   const p = pr(argv[2]);
-  const view = {
-    ...p, url: `https://github.com/${fx.repo}/pull/${p.number}`, statusCheckRollup: rollup(p),
-    commits: (p.commits || []).map((c) => ({ oid: c.oid, messageHeadline: c.messageHeadline, messageBody: c.messageBody || '' }))
-  };
+  const view = { ...p, url: `https://github.com/${fx.repo}/pull/${p.number}`, statusCheckRollup: rollup(p) };
   // A push during the land check: the second view shows the new head.
   if (fx.headMovesTo && fx.prViews === undefined) fx.prViews = 0;
   if (fx.headMovesTo && ++fx.prViews > 1) view.headRefOid = fx.headMovesTo;
@@ -179,6 +176,12 @@ if (a0 === 'api' && a1 === 'graphql') {
       }
     });
     save(); process.exit(0);
+  }
+  if (query.includes('parents{totalCount}')) {
+    // A PR's commits with their parent counts; a fixture commit sets parents (default 1).
+    const p = pr(vars.pr);
+    const nodes = (p.commits || []).map((c) => ({ commit: { oid: c.oid, messageHeadline: c.messageHeadline, messageBody: c.messageBody || '', parents: { totalCount: c.parents || 1 } } }));
+    out({ data: { repository: { pullRequest: { commits: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } } }); save(); process.exit(0);
   }
   if (query.includes('search(')) {
     const since = /updated:>=(\S+)/.exec(vars.q);

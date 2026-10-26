@@ -72,10 +72,10 @@ Exit codes: 0 done, 1 not now (nothing ready, no capacity, pending; `waitfor --u
 3. Refuses on a merge conflict, and on any unaddressed Revuto finding. A finding is addressed when its thread is resolved, outdated (a later commit changed those lines), or answered by someone other than Revuto.
 4. After a round with real findings, the next head waits for a Revuto round, unless `--trivial`.
 5. When Revuto is capped or unavailable, `--decided-by-session` replaces its review. land accepts it only with a self-review comment posted after the head commit.
-6. Scans the landing comment before anything runs.
+6. Scans the landing comment, the squash subject (the PR title) and the squash body before anything runs. A forbidden word refuses, naming the word and the PR title or the commit.
 7. Runs the land command with its log under the scratch dir. If main moves meanwhile, it reruns the command once, then refuses.
 8. Refuses if the head moved during the check.
-9. Posts the comment, then runs `gh pr merge --squash --match-head-commit SHA` (plus `--admin` with `merge_admin`). The body is the PR's commit messages without Co-Authored-By trailers and the Claude Code "Generated with" footer. Other lines that say "generated with" stay.
+9. Posts the comment, then runs `gh pr merge --squash --match-head-commit SHA` (plus `--admin` with `merge_admin`). The body is the messages of the PR's non-merge commits, without Co-Authored-By trailers and the Claude Code "Generated with" footer. Other lines that say "generated with" stay. A merge commit (more than one parent) is left out: its default message names the worker's checkout.
 10. Closes the issue with a comment naming the merge commit.
 
 ## Config: `.foreman.json`

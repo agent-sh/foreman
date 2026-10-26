@@ -231,3 +231,45 @@ test('land: after a round with real findings the next head waits for a round, un
   assert.match(wait.stderr, /has not started|had real findings/);
   assert.equal(land(t, '--trivial').code, 0);
 });
+
+test('land: merge commits stay out of the squash body', () => {
+  const t = landSetup({
+    pr: {
+      commits: [
+        { oid: '4'.repeat(40), messageHeadline: 'Fix the widget', messageBody: 'Body line.' },
+        { oid: '5'.repeat(40), parents: 2, messageHeadline: "Merge remote-tracking branch 'origin/main' into worktree-agent-ab12cd" },
+        { oid: HEAD, messageHeadline: 'Cover the reset' }
+      ]
+    }
+  });
+  const r = land(t);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(t.fx().merged.body, 'Fix the widget\n\nBody line.\n\nCover the reset');
+});
+
+test('land: a forbidden word in the squash subject or body refuses before anything changes', () => {
+  const commits = [
+    { oid: '4'.repeat(40), messageHeadline: 'Fix the widget' },
+    { oid: HEAD, messageHeadline: 'Reset the gauge', messageBody: 'Found by the Opus manager.' }
+  ];
+  const t = landSetup({ pr: { commits } });
+  const r = land(t, '--comment-file', t.comment('Reviewed: no findings.'));
+  assert.equal(r.code, 2, r.stderr);
+  assert.match(r.stderr, /squash body has forbidden words: "Opus", "manager" in commit aaaaaaa "Reset the gauge"/);
+  const fx = t.fx();
+  assert.equal(fx.merged, undefined);
+  assert.equal(fx.prs[0].comments.length, 0);
+  assert.equal(fx.issues[0].comments.length, 1);
+  assert.equal(fx.issues[0].state, 'OPEN');
+  assert.equal(t.runs(), 0);
+  assert.equal(land(t, '--gate').code, 2, 'the gate refuses it too');
+
+  const title = landSetup({ pr: { title: 'Teach the worker to reset' } });
+  const tr = land(title);
+  assert.equal(tr.code, 2);
+  assert.match(tr.stderr, /squash subject has forbidden words: "worker" in the PR title/);
+  assert.equal(title.fx().merged, undefined);
+
+  const allowed = landSetup({ pr: { commits }, config: { comment_allowed: ['Opus manager'] } });
+  assert.equal(land(allowed).code, 0);
+});
