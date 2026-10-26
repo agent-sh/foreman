@@ -402,21 +402,23 @@ function depStates(ctx, refs) {
 // ---------------------------------------------------------------- linked PRs
 
 /**
- * Open PRs already tied to each issue: a closing reference, or an open PR whose
- * head is the issue's last claim branch or foreman/N. One GraphQL call for all
- * candidates (more only when the repo has over 100 open PRs).
+ * Open PRs already tied to each issue: a closing reference from any repository,
+ * or an open PR from this repository whose head is the issue's last claim branch
+ * or foreman/N. A fork's branch of the same name does not count. One GraphQL
+ * call for all candidates (more only when the repo has over 100 open PRs).
  */
 function linkedPRs(ctx, issues) {
   const out = new Map();
   if (!issues.length) return out;
   const items = issues.map((i) => `c${i.number}: issue(number:${i.number}){closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{number state}} comments(last:100){nodes{body}}}`);
-  const prPage = (after) => `prs: pullRequests(states:OPEN,first:100${after ? `,after:"${after}"` : ''}){pageInfo{hasNextPage endCursor} nodes{number headRefName}}`;
+  const prPage = (after) => `prs: pullRequests(states:OPEN,first:100${after ? `,after:"${after}"` : ''}){pageInfo{hasNextPage endCursor} nodes{number headRefName isCrossRepository headRepository{nameWithOwner}}}`;
   const ask = (parts) => ghJson(['api', 'graphql', '-f', `query=query{repository(owner:"${ctx.owner}",name:"${ctx.name}"){${parts.join(' ')}}}`]).data.repository;
   const repo = ask([prPage(null), ...items]);
   const byHead = new Map();
+  const own = (p) => !p.isCrossRepository && p.headRepository != null && p.headRepository.nameWithOwner.toLowerCase() === ctx.repo.toLowerCase();
   let page = repo.prs;
   for (;;) {
-    for (const p of page.nodes) byHead.set(p.headRefName, p.number);
+    for (const p of page.nodes) if (own(p)) byHead.set(p.headRefName, p.number);
     if (!page.pageInfo.hasNextPage) break;
     page = ask([prPage(page.pageInfo.endCursor)]).prs;
   }

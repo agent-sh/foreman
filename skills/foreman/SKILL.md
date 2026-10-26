@@ -1,7 +1,7 @@
 ---
 name: foreman
 description: "Use when user asks to work the issue queue, run foreman, pick the next issue or land ready PRs. Works a repo's GitHub issue queue with native subagents: pick, claim, a worktree worker per issue, Revuto's findings, land. Claims, comments and merges, so only an explicit /foreman starts it."
-version: 0.1.1
+version: 0.1.2
 argument-hint: "[status|stats|ISSUE]"
 disable-model-invocation: true
 ---
