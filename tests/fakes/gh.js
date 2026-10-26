@@ -147,7 +147,13 @@ if (a0 === 'api' && a1 === 'graphql') {
   }
   if (query.includes('closedByPullRequestsReferences')) {
     const repo = {};
-    repo.prs = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: fx.prs.filter((p) => p.state === 'OPEN').map((p) => ({ number: p.number, headRefName: p.headRefName })) };
+    repo.prs = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: fx.prs.filter((p) => p.state === 'OPEN').map((p) => {
+      const head = p.headRepository === undefined ? fx.repo : p.headRepository;
+      const node = { number: p.number, headRefName: p.headRefName };
+      if (/\bheadRepository\s*\{\s*nameWithOwner\s*\}/.test(query)) node.headRepository = head && { nameWithOwner: head };
+      if (query.includes('isCrossRepository')) node.isCrossRepository = head !== fx.repo;
+      return node;
+    }) };
     for (const [, n] of query.matchAll(/c(\d+): issue\(number:/g)) {
       const i = issue(n);
       repo[`c${n}`] = {

@@ -92,3 +92,32 @@ test('pick: skips a ready issue with an open PR - closing reference, its claim b
   const graphql = t.fx().calls.filter((c) => c.startsWith('api graphql'));
   assert.equal(graphql.length, 2, 'one batched query per pick, not one per issue');
 });
+
+test('pick: a fork PR on foreman/N or the claim branch does not link issue N; a same-repo one does, and a closing reference counts from a fork', () => {
+  const t = setup({
+    fixture: {
+      issues: [
+        issue(1, { createdAt: ago(90) }),
+        issue(2, { createdAt: ago(80), comments: [
+          { createdAt: ago(60), body: claimBody('a1', 'tc/t2', ago(60)) },
+          { createdAt: ago(50), body: '<!-- foreman:release {"to":"ready"} -->\nMoved to status:ready: requeued' }
+        ] }),
+        issue(3, { createdAt: ago(70) }),
+        issue(4, { createdAt: ago(60) }),
+        issue(5, { createdAt: ago(50) })
+      ],
+      prs: [
+        { number: 971, state: 'OPEN', headRefName: 'foreman/1', headRepository: 'stranger/widgets' },
+        { number: 972, state: 'OPEN', headRefName: 'tc/t2', headRepository: 'stranger/widgets' },
+        { number: 973, state: 'OPEN', headRefName: 'foreman/3', headRepository: null },
+        { number: 974, state: 'OPEN', headRefName: 'foreman/4' },
+        { number: 975, state: 'OPEN', headRefName: 'fix-5', headRepository: 'stranger/widgets', closes: [5] }
+      ]
+    }
+  });
+  const r = t.run(['pick', '--json']);
+  assert.deepEqual(r.json.linked.map((l) => [l.number, l.reason]), [[4, 'has open PR #974'], [5, 'has open PR #975']]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.json.picked.number, 1);
+  assert.equal(t.fx().calls.filter((c) => c.startsWith('api graphql')).length, 1, 'one batched query per pick, not one per issue');
+});
