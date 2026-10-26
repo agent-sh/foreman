@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.4] - Unreleased
+
+### Fixed
+
+- `land` leaves merge commits (more than one parent) out of the squash body. A merge made in a worker's checkout defaults to "Merge remote-tracking branch 'origin/main' into worktree-agent-<id>", and that line reached main. The commits now come from one paginated GraphQL query that reads each commit's parent count, since `gh pr view --json commits` has none (#7).
+- `land` scans the squash subject and body with `comment_forbidden` and `comment_allowed`, as it does the landing comment. A hit refuses with exit 2 and names the word and the PR title or the commit's SHA and headline. The scan runs in the gates, so `--gate` refuses too, and a refusal posts no comment and merges nothing (#7).
+
+### Changed
+
+- `brief` and the skill tell workers to name merges plainly: `git merge -m "Merge origin/main" origin/main` (#7).
+
 ## [0.1.3] - Unreleased
 
 ### Fixed

@@ -35,6 +35,7 @@ test('brief: acceptance section, claim branch, check command, why it came back, 
   assert.match(b, /## Why it came back\nMoved to status:rework: the gauge never resets/);
   assert.match(b, /- P1 src\/a\.js:3: \[P1\] Reset is never called\./);
   assert.doesNotMatch(b, /Old\./);
+  assert.match(b, /Name merges plainly: `git merge -m "Merge origin\/main" origin\/main`/);
 
   assert.equal(setup({ fixture: { issues: [issue(6)] } }).run(['brief', '6']).code, 2, 'no claim, no brief');
 });

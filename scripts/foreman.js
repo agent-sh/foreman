@@ -815,6 +815,7 @@ function cmdBrief(ctx, opts) {
     check ? `- Before you report, run \`${check}\` from the worktree root. Report its exit code and log path. A failing check is a failed task, not a note.`
       : '- The repo has no foreman check command. Run the tests your change touches and report them.',
     '- Run only the tests your change touches. The full suite runs once at merge.',
+    '- Name merges plainly: `git merge -m "Merge origin/main" origin/main`. A default merge message names your checkout. land leaves merge commits out of the squash message and refuses forbidden words in the rest.',
     '- No attribution: no Co-Authored-By trailer and no "Generated with" line in commits or PR text. Check `git log -1 --format=%B` before you push.',
     '- Scope is frozen. Anything outside the acceptance goes in your report as a follow-up, not in this change.',
     '- Do not run host-only steps (user systemd bus, hardware, cloud CLIs, anything outside the worktree). Write the exact commands and the receipts they should produce in your report.',
@@ -1083,7 +1084,49 @@ function lsRemote(ctx, branch) {
 
 const head7 = (p) => p.headRefOid.slice(0, 7);
 
-const PR_FIELDS = 'number,title,state,url,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,commits';
+const PR_FIELDS = 'number,title,state,url,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup';
+
+// gh pr view --json commits has no parents, so the squash message reads the commits here.
+const COMMITS_QUERY = `query($owner:String!,$name:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){
+commits(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{commit{oid messageHeadline messageBody parents{totalCount}}}}
+}}}`;
+
+function fetchCommits(ctx, pr) {
+  let after = null; const commits = [];
+  do {
+    const args = ['api', 'graphql', '-f', `query=${COMMITS_QUERY}`, '-f', `owner=${ctx.owner}`, '-f', `name=${ctx.name}`, '-F', `pr=${pr}`];
+    if (after) args.push('-f', `after=${after}`);
+    const d = ghJson(args);
+    const c = d && d.data && d.data.repository && d.data.repository.pullRequest && d.data.repository.pullRequest.commits;
+    if (!c) throw new Refusal(`PR #${pr} not found in ${ctx.repo}`, EXIT.ERROR);
+    commits.push(...c.nodes.map((x) => x.commit));
+    after = c.pageInfo && c.pageInfo.hasNextPage ? c.pageInfo.endCursor : null;
+  } while (after);
+  return commits;
+}
+
+/**
+ * The squash subject and body: the PR title, then every non-merge commit's
+ * message without attribution. A merge (more than one parent) adds only its
+ * default message, which names the worker's checkout. Both go through the
+ * comment_forbidden scan, and a hit names the commit.
+ */
+function squashMessage(ctx, pr, p) {
+  const subject = `${p.title} (#${pr})`;
+  const kept = fetchCommits(ctx, pr).filter((c) => !(c.parents && c.parents.totalCount > 1))
+    .map((c) => ({ oid: c.oid, headline: c.messageHeadline, text: stripAttribution([c.messageHeadline, c.messageBody].filter(Boolean).join('\n\n')) }));
+  const words = (hits) => hits.map((h) => `"${h.match}"`).join(', ');
+  const titleHits = scanText(p.title, ctx.config);
+  if (titleHits.length) {
+    throw new Refusal(`squash subject has forbidden words: ${words(titleHits)} in the PR title; retitle it with gh pr edit ${pr} --title`, EXIT.REFUSED, { forbidden: titleHits });
+  }
+  const bad = kept.map((c) => ({ ...c, hits: scanText(c.text, ctx.config) })).filter((c) => c.hits.length);
+  if (bad.length) {
+    throw new Refusal(`squash body has forbidden words: ${bad.map((c) => `${words(c.hits)} in commit ${c.oid.slice(0, 7)} "${c.headline}"`).join('; ')}`,
+      EXIT.REFUSED, { forbidden: bad.map((c) => ({ commit: c.oid, headline: c.headline, hits: c.hits })) });
+  }
+  return { subject, body: stripAttribution(kept.map((c) => c.text).join('\n\n')) };
+}
 
 /** Step 1: every gate that does not change anything. Returns the PR, or throws. */
 function landGates(ctx, n, opts) {
@@ -1131,7 +1174,9 @@ function landGates(ctx, n, opts) {
       }
     }
   }
-  return { pr, p, checks, findings, open };
+  // Last, so a refusal names the gate that matters first, and before anything changes.
+  const squash = squashMessage(ctx, pr, p);
+  return { pr, p, checks, findings, open, squash };
 }
 
 function cmdLand(ctx, opts) {
@@ -1172,9 +1217,8 @@ function cmdLand(ctx, opts) {
 
   // Step 3 and 4: post the review comment, then squash at the exact head.
   if (commentText) gh(['pr', 'comment', String(pr), ...ctx.R, '--body-file', '-'], { input: commentText });
-  const body = stripAttribution((p.commits || []).map((c) => [c.messageHeadline, c.messageBody].filter(Boolean).join('\n\n')).join('\n\n'));
   gh(['pr', 'merge', String(pr), ...ctx.R, '--squash', '--match-head-commit', head, ...(ctx.config.merge_admin ? ['--admin'] : []),
-    '--subject', `${p.title} (#${pr})`, '--body-file', '-'], { input: body });
+    '--subject', g.squash.subject, '--body-file', '-'], { input: g.squash.body });
   const merged = ghJson(['pr', 'view', String(pr), ...ctx.R, '--json', 'mergeCommit,state']);
   const mergeSha = merged.mergeCommit && merged.mergeCommit.oid;
 
