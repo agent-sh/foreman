@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3] - Unreleased
+
+### Fixed
+
+- `run-long` no longer reports a failed command as a success. The unit runs the command through a wrapper script whose EXIT trap writes the exit code to `LOG.rc` beside the log (to `LOG.rc.tmp`, then a rename), on success, failure, and HUP, INT or TERM. The new `run-long --status --unit U --log L` reads it: exit 0 success, 1 running, 2 failed with the exit code and signal, 3 unknown when the unit is gone and no exit code was recorded. The printed wait and result hints use it instead of `systemctl show`, which reports `Result=success` once `--collect` drops the unit. A start removes any stale `LOG.rc` (#5).
+- `run-long` keeps `$` literal in the command and the log path. The command now lives in the wrapper script, off the unit's command line, and a `systemd-run` template gets `$` doubled, since systemd expands variables there. Template substitution no longer reads `$$` or `$&` in a path as a replacement pattern.
+
 ## [0.1.2] - Unreleased
 
 ### Changed

@@ -51,7 +51,8 @@ Needs Node 22+, `gh` (logged in) and `git`. The skill waits with `waitfor`; `run
 | `land N --pr P --head SHA [--comment-file F] [--gate] [--trivial] [--decided-by-session]` | Gates, land command, comment, squash merge at SHA, issue close. `--gate` checks only. |
 | `status [--local K]` | Counts by label, claims, quiet claims and capacity, from one `gh` call. |
 | `stats [--since DATE]` | PRs that hit the Revuto cap, self-reviews and their findings, manual Revuto requests. |
-| `run-long --unit U --log L -- CMD` | Starts CMD as a transient systemd user unit, so it outlives the session. |
+| `run-long --unit U --log L -- CMD` | Starts CMD as a transient systemd user unit, so it outlives the session. The unit runs CMD through a wrapper script (`L.run.sh`) whose EXIT trap writes CMD's exit code to `L.rc` (via `L.rc.tmp` and a rename), also when it fails or is stopped. Prints the `waitfor` line and the status command. |
+| `run-long --status --unit U --log L` | Reads `L.rc`: exit 0 success, 1 running (no `L.rc` yet, unit active), 2 failed (prints the exit code and signal), 3 unknown (unit gone, no exit code recorded). Read the result here, never from systemctl: after `--collect` drops the unit, systemd reports success even for a failed command. |
 | `scan [FILE\|-]` | Checks text against `comment_forbidden`. |
 
 Exit codes: 0 done, 1 not now (nothing ready, no capacity, pending; `waitfor --until` keeps waiting), 2 refused by a rule, 3 error.
@@ -104,7 +105,7 @@ Optional, in the repo root, version-controlled. Every key has a default. Unknown
 | `review.wait_minutes` | 45 | Minutes without a review check on a head before the app counts as unavailable. Revuto also polls every 30 minutes. |
 | `comment_forbidden` | `worker\|claude\|fable\|opus\|worktree\|manager\|/home/` | Case-insensitive regex. Every comment foreman posts is scanned with it. |
 | `comment_allowed` | `[]` | Phrases removed before the scan, such as a product name. |
-| `long_runs` | `systemd-run --user --collect --same-dir -E PATH --unit={unit} sh -c '{cmd} > {log} 2>&1'` | `{cmd}` and `{log}` are escaped to sit inside single quotes. |
+| `long_runs` | `systemd-run --user --collect --same-dir -E PATH --unit={unit} sh -c '{cmd} > {log} 2>&1'` | `{cmd}` (the wrapper script) and `{log}` are escaped to sit inside single quotes. For a `systemd-run` template, `$` is doubled, since systemd expands variables on the unit's command line. |
 
 Environment: `FOREMAN_GH` and `FOREMAN_GIT` point at other binaries (a `.js` path runs under node). `FOREMAN_LOAD1`, `FOREMAN_CPU_PRESSURE` (a number, or `none` for no PSI) and `FOREMAN_MEM_GB` override the host numbers, for containers and tests.
 

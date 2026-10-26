@@ -818,7 +818,7 @@ function cmdBrief(ctx, opts) {
     '- No attribution: no Co-Authored-By trailer and no "Generated with" line in commits or PR text. Check `git log -1 --format=%B` before you push.',
     '- Scope is frozen. Anything outside the acceptance goes in your report as a follow-up, not in this change.',
     '- Do not run host-only steps (user systemd bus, hardware, cloud CLIs, anything outside the worktree). Write the exact commands and the receipts they should produce in your report.',
-    `- Commands longer than 10 minutes: \`node ${foreman} run-long --unit <name> --log ${path.join(scratch, '<name>.log')} -- <cmd>\`, then wait with \`waitfor --until '! systemctl --user is-active -q <name>' --every 1m --timeout 2h\`. Never \`nohup\` or \`&\`.`,
+    `- Commands longer than 10 minutes: \`node ${foreman} run-long --unit <name> --log ${path.join(scratch, '<name>.log')} -- <cmd>\`, then wait with the \`waitfor\` line it prints and read the result with \`node ${foreman} run-long --status --unit <name> --log <the same log>\` (exit 0 success, 1 running, 2 failed, 3 unknown), never with systemctl. Never \`nohup\` or \`&\`.`,
     `- You share the host with ${ctx.config.agents_max - 1} other agents. Keep parallel builds and tests small. If a process of yours is killed, say so; do not report it as an unknown exit.`,
     '',
     '## Report (your final message)',
@@ -1216,22 +1216,102 @@ function cmdStatus(ctx, opts) {
 
 // ---------------------------------------------------------------- run-long
 
+// systemd reports Result=success for a unit that --collect already dropped, so
+// the unit runs CMD through a wrapper script that records CMD's exit code in
+// LOG.rc. The EXIT trap covers a normal end, a failure and HUP, INT or TERM
+// (systemctl stop). Only SIGKILL of the wrapper leaves no rc: that reads as
+// unknown. The command lives in the script, not on the unit's command line, so
+// systemd's own $ expansion never touches it.
+const RUN_STATES = { success: EXIT.OK, running: 1, failed: 2, unknown: 3 };
+const UNIT_RUNNING = new Set(['active', 'activating', 'deactivating', 'reloading', 'refreshing']);
+
+function wrapperScript(rcFile, cmd) {
+  return [
+    '# foreman run-long: run the command, then record its exit code beside the log.',
+    `rc=${shQuote(rcFile)}`,
+    `trap 'code=$?; printf "%s\\n" "$code" > "$rc.tmp" && mv -f "$rc.tmp" "$rc"' EXIT`,
+    "trap 'exit 129' HUP",
+    "trap 'exit 130' INT",
+    "trap 'exit 143' TERM",
+    cmd.map(shQuote).join(' '),
+    ''
+  ].join('\n');
+}
+
+function readRc(file) {
+  let s;
+  try { s = fs.readFileSync(file, 'utf8').trim(); } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw new Refusal(`cannot read ${file}: ${e.message}`, EXIT.ERROR);
+  }
+  return /^\d+$/.test(s) ? Number(s) : NaN;
+}
+
+function signalName(code) {
+  if (code <= 128) return null;
+  const hit = Object.entries(os.constants.signals).find(([, n]) => n === code - 128);
+  return hit ? hit[0].replace(/^SIG/, '') : null;
+}
+
+function runLongState(unit, log) {
+  const rcFile = `${log}.rc`;
+  let rc = readRc(rcFile);
+  if (rc === null) {
+    const unitState = run('systemctl', ['--user', 'is-active', unit], { allowFail: true }).stdout.trim();
+    if (UNIT_RUNNING.has(unitState)) return { state: 'running', detail: `unit ${unitState}, no exit code yet` };
+    // The wrapper writes the rc before the unit ends, so read it once more.
+    rc = readRc(rcFile);
+    if (rc === null) return { state: 'unknown', detail: 'unit gone, no exit code recorded' };
+  }
+  if (Number.isNaN(rc)) return { state: 'unknown', detail: `${rcFile} holds no exit code` };
+  const sig = signalName(rc);
+  return { state: rc === 0 ? 'success' : 'failed', exit_code: rc, detail: `exit ${rc}${sig ? `, signal ${sig}` : ''}` };
+}
+
 function cmdRunLong(ctx, opts) {
   const unit = need(opts.unit, '--unit');
   if (!/^[\w.@-]+$/.test(unit)) throw new Refusal('--unit must be letters, digits, ".", "_", "@" or "-"', EXIT.ERROR);
   const log = path.resolve(expandHome(need(opts.log, '--log')));
+  const rcFile = `${log}.rc`;
+  const statusCmd = ['node', path.resolve(__filename), 'run-long', '--status', '--unit', unit, '--log', log].map(shQuote).join(' ');
+  if (opts.status) {
+    if (opts.cmd.length) throw new Refusal('run-long --status takes no command', EXIT.ERROR);
+    const s = runLongState(unit, log);
+    return {
+      code: RUN_STATES[s.state],
+      result: { unit, log, rc_file: rcFile, ...s },
+      text: `${unit}: ${s.state} (${s.detail})\n  log: ${log}`
+    };
+  }
   if (!opts.cmd.length) throw new Refusal('run-long needs a command after --', EXIT.ERROR);
   if (process.platform === 'win32') throw new Refusal('run-long needs systemd user units; start the command detached yourself on this OS', EXIT.ERROR);
   fs.mkdirSync(path.dirname(log), { recursive: true });
+  // A stale rc from an earlier run with this log would read as this run's result.
+  fs.rmSync(rcFile, { force: true });
+  fs.rmSync(`${rcFile}.tmp`, { force: true });
+  const script = `${log}.run.sh`;
+  fs.writeFileSync(script, wrapperScript(rcFile, opts.cmd));
   // {cmd} and {log} sit inside single quotes in the template, so escape for that.
-  const inQuotes = (s) => s.replace(/'/g, `'\\''`);
-  const cmd = opts.cmd.map(shQuote).join(' ');
-  const line = ctx.config.long_runs.replaceAll('{unit}', unit).replaceAll('{cmd}', inQuotes(cmd)).replaceAll('{log}', inQuotes(shQuote(log)));
+  // systemd-run expands $VAR and ${VAR} on the unit's command line, even inside
+  // sh quotes, unless --expand-environment=no; "$$" is its literal "$".
+  const tmpl = ctx.config.long_runs;
+  const sdExpands = path.basename(tmpl.trim().split(/\s+/)[0]) === 'systemd-run' && !/--expand-environment[= ](no|false|0|off)\b/.test(tmpl);
+  const inQuotes = (s) => (sdExpands ? s.replaceAll('$', '$$$$') : s).replace(/'/g, `'\\''`);
+  const cmd = ['sh', script].map(shQuote).join(' ');
+  // Function replacements: a string one would read "$$" or "$&" in a path as a pattern.
+  const line = tmpl.replaceAll('{unit}', () => unit).replaceAll('{cmd}', () => inQuotes(cmd)).replaceAll('{log}', () => inQuotes(shQuote(log)));
   const rc = runShell(line, { cwd: process.cwd() });
   if (rc !== 0) throw new Refusal(`long_runs command exit ${rc}: ${line}`, EXIT.ERROR);
   return {
-    result: { unit, log, command: line },
-    text: `started ${unit}\n  log: ${log}\n  wait: waitfor --until '! systemctl --user is-active -q ${unit}' --every 1m --timeout 2h\n  result: systemctl --user show -p Result,ExecMainStatus ${unit}`
+    result: { unit, log, rc_file: rcFile, script, command: line, status: statusCmd },
+    text: [
+      `started ${unit}`,
+      `  log: ${log}`,
+      `  exit code: ${rcFile} (written when the command ends)`,
+      `  wait: waitfor --until ${shQuote(statusCmd)} --fail-after 1 --every 1m --timeout 2h`,
+      `  result: ${statusCmd}`,
+      '  status exit: 0 success, 1 running, 2 failed, 3 unknown'
+    ].join('\n')
   };
 }
 
@@ -1343,21 +1423,26 @@ const USAGE = `usage: foreman <command> [--json] [--repo OWNER/NAME] [--config F
   revuto-ask P                            post a request for one more review round
   stats [--since DATE]                    caps hit, self-reviews, findings per self-review, manual requests
   status [--local K]                      counts, claims, quiet claims, capacity
-  run-long --unit U --log L -- CMD...     start CMD as a transient systemd user unit
+  run-long --unit U --log L -- CMD...     start CMD as a transient systemd user unit; its exit code lands in L.rc
+  run-long --status --unit U --log L      exit 0 success, 1 running, 2 failed, 3 unknown (unit gone, no L.rc)
   scan [FILE|-]                           check text against comment_forbidden
 exit: 0 done, 1 not now, 2 refused, 3 error`;
 
 const BOOL = new Set(['json', 'fix', 'retake', 'gate', 'decided-by-session', 'trivial', 'allow-unpushed', 'help']);
 
-function parseArgs(argv) {
+// Flags that take no value for one command only: adopt's --status takes one.
+const BOOL_FOR = { 'run-long': new Set(['status']) };
+
+function parseArgs(argv, name) {
   const opts = { _: [], cmd: [] };
+  const bool = (key) => BOOL.has(key) || Boolean(BOOL_FOR[name] && BOOL_FOR[name].has(key));
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { opts.cmd = argv.slice(i + 1); break; }
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       const key = eq > 0 ? a.slice(2, eq) : a.slice(2);
-      if (BOOL.has(key)) { opts[key] = true; continue; }
+      if (bool(key)) { opts[key] = true; continue; }
       const val = eq > 0 ? a.slice(eq + 1) : argv[++i];
       if (val === undefined) throw new Refusal(`${a} needs a value`, EXIT.ERROR);
       opts[key] = val;
@@ -1387,7 +1472,7 @@ function main(argv) {
   let opts = { json: argv.includes('--json') };
   try {
     const [name, ...rest] = argv;
-    opts = parseArgs(rest);
+    opts = parseArgs(rest, name);
     if (!name || name === 'help' || name === '--help' || opts.help) { process.stdout.write(`${USAGE}\n`); return EXIT.OK; }
     let out;
     if (name === 'doctor') out = cmdDoctor(opts);
