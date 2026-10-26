@@ -2,6 +2,10 @@
 
 ## [0.1.2] - Unreleased
 
+### Changed
+
+- The README no longer compares foreman with the retired ship and gate-and-ship plugins.
+
 ### Fixed
 
 - `pick` counts an open PR on an issue's claim branch or `foreman/N` only when the PR's head is in this repository. Before, a fork PR whose head branch had the same name marked the issue as linked, and pick skipped it. A closing reference still counts from any repository. The batched query now also reads `headRepository` and `isCrossRepository`, and stays one query per pick (#2).

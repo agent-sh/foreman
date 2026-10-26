@@ -6,9 +6,9 @@ foreman turns a repo's open issues into a work queue for one main Claude Code se
 
 There is no daemon and no state store. Labels, assignees and comments on GitHub are the state, so several sessions can share a queue. Every command reads GitHub live, and nothing is cached.
 
-## How it differs from ship and gate-and-ship
+## Scope
 
-[ship](https://github.com/agent-sh/ship) and gate-and-ship take one change from commit to merge. foreman runs a queue: which issue is next, who holds it, how many agents the host can take, and when a PR may land. It does not replace a repo's own check or merge script; it calls them.
+foreman runs a queue: which issue is next, who holds it, how many agents the host can take, and when a PR may land. It does not replace a repo's own check or merge script; it calls them.
 
 ## Install
 
