@@ -44,7 +44,7 @@ Needs Node 22+, `gh` (logged in) and `git`. The skill waits with `waitfor`; `run
 | `release N --to ready\|rework\|held\|blocked\|review --reason R` | Moves the issue and comments why. Every target except review ends the claim. |
 | `stale [--retake [--keep TAG]]` | Claims with no push and no comment for `stale_claim_hours`. `--retake` sends in-progress ones to ready and review ones to rework; `--keep TAG` spares agents named `TAG-*`. |
 | `capacity [--local K]` | load1, CPU pressure (PSI), available memory, live claims plus K local agents. Exit 0 when a spawn may start, 1 when not. On a host without PSI the pressure gate is skipped and the output says so. |
-| `brief N [--pr P]` | The worker brief: acceptance, issue body, why it came back, rules, report format. `--pr` adds the open findings. |
+| `brief N [--branch B] [--pr P]` | The worker brief: acceptance, issue body, why it came back, rules, report format. The branch is `--branch`, else the live claim's; with neither it refuses. `--pr` adds the open findings. |
 | `findings P` | Revuto's findings on the PR: severity, addressed or not, rounds used, capped, unavailable, pending. |
 | `self-review P --findings N --fixed M --body FILE` | Records the session's own review when Revuto is capped or unavailable. |
 | `revuto-ask P` | Posts a request for one more Revuto round and prints the operator command. |
