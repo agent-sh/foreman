@@ -2,7 +2,7 @@
 
 > GitHub issues as a task queue for native agents
 
-foreman turns a repo's open issues into a work queue for one main Claude Code session and its worktree subagents. The session picks the next ready issue and claims it. A worktree worker implements it, and Revuto reviews the PR. foreman lands the PR at the exact head it checked.
+foreman turns a repo's open issues into a work queue for one main Claude Code session and its worktree subagents. The session picks the next ready issue and claims it. A worktree worker implements it, and Revuto reviews the PR. foreman lands the PR at the exact head it checked, with a fast-forward push from the local git identity.
 
 There is no daemon and no state store. Labels, assignees and comments on GitHub are the state, so several sessions can share a queue. Every command reads GitHub live, and nothing is cached.
 
@@ -48,7 +48,7 @@ Needs Node 22+, `gh` (logged in) and `git`. The skill waits with `waitfor`; `run
 | `findings P` | Revuto's findings on the PR: severity, addressed or not, rounds used, capped, unavailable, pending. |
 | `self-review P --findings N --fixed M --body FILE` | Records the session's own review when Revuto is capped or unavailable. |
 | `revuto-ask P` | Posts a request for one more Revuto round and prints the operator command. |
-| `land N --pr P --head SHA [--comment-file F] [--gate] [--trivial] [--decided-by-session]` | Gates, land command, comment, squash merge at SHA, issue close. `--gate` checks only. |
+| `land N --pr P --head SHA [--comment-file F] [--gate] [--trivial] [--decided-by-session]` | Gates, land command, push of SHA or its squash to the base, comment, issue close. `--gate` checks only. |
 | `status [--local K]` | Counts by label, claims, quiet claims and capacity, from one `gh` call. |
 | `stats [--since DATE]` | PRs that hit the Revuto cap, self-reviews and their findings, manual Revuto requests. |
 | `run-long --unit U --log L -- CMD` | Starts CMD as a transient systemd user unit, so it outlives the session. The unit runs CMD through a wrapper script (`L.run.sh`) whose EXIT trap writes CMD's exit code to `L.rc` (via `L.rc.tmp` and a rename), also when it fails or is stopped. Prints the `waitfor` line and the status command. |
@@ -60,7 +60,7 @@ Exit codes: 0 done, 1 not now (nothing ready, no capacity, pending; `waitfor --u
 ### Dependencies
 
 `depends_pattern` finds the list on each matching line. Each part is one of:
-- `#N` or `owner/repo#N`: satisfied when the issue is closed or the PR is merged.
+- `#N` or `owner/repo#N`: satisfied when the issue is closed or the PR is merged. A PR that land closed after pushing its squash counts as merged when its last close comment from land (`Landed on BASE as SHA, a squash of HEAD.`) names the PR's base and its current head, was posted by the gh user running foreman (`gh api user`), and GitHub's compare shows SHA on that base. Any other closed PR blocks.
 - anything ending in `(done)`: satisfied.
 - `none`: no dependency.
 - anything else: unresolved. It blocks, because an unknown reference is never assumed done.
@@ -75,8 +75,12 @@ Exit codes: 0 done, 1 not now (nothing ready, no capacity, pending; `waitfor --u
 6. Scans the landing comment, the squash subject (the PR title) and the squash body before anything runs. A forbidden word refuses, naming the word and the PR title or the commit.
 7. Runs the land command with its log under the scratch dir. If main moves meanwhile, it reruns the command once, then refuses.
 8. Refuses if the head moved during the check.
-9. Posts the comment, then runs `gh pr merge --squash --match-head-commit SHA` (plus `--admin` with `merge_admin`). The body is the messages of the PR's non-merge commits, without Co-Authored-By trailers and the Claude Code "Generated with" footer. Other lines that say "generated with" stay. A merge commit (more than one parent) is left out: its default message names the worker's checkout.
-10. Closes the issue with a comment naming the merge commit.
+9. Refuses unless every push URL of `origin` (`git remote get-url --push --all origin`) is this repo on github.com, since git pushes to `remote.origin.pushurl` when it is set. Only `https://github.com/O/R`, `git@github.com:O/R` and `ssh://git@github.com[:port]/O/R` count, each with an optional `.git`. Local paths, `file://`, other transports and other hosts refuse. Fetches the PR head (`refs/pull/P/head`) and the base into refs under `refs/foreman/`, with no checkout and no change to any branch or the working tree. In a shallow clone the fetch adds `--unshallow`, because the merge base may be missing. It refuses if the fetched head is not SHA. Then it lands one of two ways:
+   - **fast-forward:** the PR is one non-merge commit whose parent is the base tip, its author and committer emails are the repo's `user.email`, and its whole message passes the `comment_forbidden` scan. land pushes SHA itself, and GitHub marks the PR merged. land reads the PR state once more if GitHub lags, and warns when it is still not merged.
+   - **squash:** otherwise. `git merge-tree --write-tree` merges SHA into the base tip, and a merge conflict refuses with the conflicting files. `git commit-tree` makes one commit of that tree on the base tip. Author and committer come from the git config. The subject is the PR title with `(#P)`. The body is the messages of the PR's non-merge commits, without Co-Authored-By trailers and the Claude Code "Generated with" footer. Other lines that say "generated with" stay. A merge commit (more than one parent) is left out: its default message names the worker's checkout. After the push, land closes the PR with a comment naming the landed commit, since GitHub shows it closed, not merged.
+
+   Before the push, land refuses if the PR head is no longer SHA. The push is a plain `git push origin SHA:refs/heads/BASE`, never forced. If it is rejected because the base moved, land exits 1: base moved; land again. The `refs/foreman/` refs are removed in every case. Needs git 2.38 or later.
+10. Reads the PR head again after the push. A squash PR is closed only while its head is SHA, and the head is read again after the close. A fast-forward PR must show merged, or still have SHA as its head. If the head moved at any of these reads, the PR and the issue stay open, and land reopens the PR if it closed it: land posts a short note that the gated head landed and newer commits remain, and exits 2 naming both commits. Otherwise it posts the landing comment, then closes the issue with a comment naming the landed commit. `--json` output has `merge` (the landed commit), `method` (`fast-forward` or `squash`), `squash_reason`, `base` (the base tip it landed on) and `pr_state`.
 
 ## Config: `.foreman.json`
 
@@ -97,7 +101,6 @@ Optional, in the repo root, version-controlled. Every key has a default. Unknown
 | `land` | none | The land command. Placeholders: `{issue}`, `{pr}`, `{head}`, `{base}`, `{receipts}`, `{log}`. It also gets `FOREMAN_RECEIPTS`, `FOREMAN_ISSUE`, `FOREMAN_PR`, `FOREMAN_HEAD`. |
 | `required_checks` | `[]` | Check names that must be reported and green. |
 | `allow_no_checks` | false | When true, a PR with zero checks lands on the land command and findings alone. When false, land refuses it. |
-| `merge_admin` | false | When true, land merges with `--admin`. Every other land guard still applies. |
 | `review.app` | `revuto-review` | The review app's slug. |
 | `review.rounds_max` | 3 | Rounds after which foreman treats the app as capped, even without its cap message. 3 matches Revuto's deployed cap; a repo may set 4. |
 | `review.no_new_round_for_lows` | true | A lows-only round (P3 or LOW) needs no new round. |
@@ -111,7 +114,7 @@ Environment: `FOREMAN_GH` and `FOREMAN_GIT` point at other binaries (a `.js` pat
 
 ## Tests
 
-`npm test` runs `node --test`. `tests/fakes/` puts fake `gh` and `git` first on PATH. They serve and change a JSON fixture of issues, PRs, checks, reviews and refs, so no test touches GitHub.
+`npm test` runs `node --test`. `tests/fakes/` puts fake `gh` and `git` first on PATH. They serve and change a JSON fixture of issues, PRs, checks, reviews and refs, so no test touches GitHub. The land push tests run real git against a local bare repo standing in for origin.
 
 ## License
 

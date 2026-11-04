@@ -49,6 +49,40 @@ test('pick: dependencies gate - open issue, unmerged PR and unknown reference bl
   assert.equal(r.json.ready, 2);
   const waiting = Object.fromEntries(r.json.waiting.map((w) => [w.number, w.open || w.unresolved]));
   assert.deepEqual(waiting, { 10: ['#11'], 14: ['T7'], 17: ['#18'] });
+  assert.equal(t.fx().userCalls, undefined, 'no receipt, no login read');
+});
+
+test('pick: a PR land closed after pushing its squash counts as done; an abandoned or unlanded closed PR blocks', () => {
+  const landed = (sha) => ({ body: `Landed on main as ${sha}, a squash of ${'a'.repeat(40)}.` });
+  const t = setup({
+    fixture: {
+      issues: [
+        issue(30, { createdAt: ago(90), body: 'Depends on: #31' }),
+        issue(32, { createdAt: ago(80), body: 'Depends on: #33' }),
+        issue(34, { createdAt: ago(70), body: 'Depends on: #35' }),
+        issue(36, { createdAt: ago(60), body: 'Depends on: #37' }),
+        issue(38, { createdAt: ago(50), body: 'Depends on: #39' }),
+        issue(40, { createdAt: ago(40), body: 'Depends on: #41' })
+      ],
+      prs: [
+        { number: 31, state: 'CLOSED', baseRefName: 'main', headRefOid: 'a'.repeat(40), comments: [landed('1'.repeat(40))] },
+        { number: 33, state: 'CLOSED', baseRefName: 'main', headRefOid: 'a'.repeat(40), comments: [landed('2'.repeat(40))] },
+        // Reopened after landing, given a newer commit, closed again: the receipt names an older head.
+        { number: 39, state: 'CLOSED', baseRefName: 'main', headRefOid: 'b'.repeat(40), comments: [landed('1'.repeat(40))] },
+        // A receipt written by someone other than the gh user foreman runs as.
+        { number: 41, state: 'CLOSED', baseRefName: 'main', headRefOid: 'a'.repeat(40), comments: [{ ...landed('1'.repeat(40)), author: 'mallory' }] },
+        { number: 35, state: 'CLOSED', baseRefName: 'main', comments: [{ body: 'Superseded by #40.' }] },
+        { number: 37, state: 'CLOSED', baseRefName: 'main', comments: [{ body: `Landed on release as ${'1'.repeat(40)}, a squash of ${'a'.repeat(40)}.` }] }
+      ],
+      compare: { [`main...${'1'.repeat(40)}`]: 'behind', [`main...${'2'.repeat(40)}`]: 'diverged' }
+    }
+  });
+  const r = t.run(['pick', '--json']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.json.picked.number, 30);
+  const waiting = Object.fromEntries(r.json.waiting.map((w) => [w.number, w.open || w.unresolved]));
+  assert.deepEqual(waiting, { 32: ['#33'], 34: ['#35'], 36: ['#37'], 38: ['#39'], 40: ['#41'] });
+  assert.equal(t.fx().userCalls, 1, 'the gh login is read once per run');
 });
 
 test('pick: nothing ready exits 1 with counts by reason; rework issues are pickable', () => {

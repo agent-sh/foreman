@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- `land` no longer merges through GitHub. It fetches the PR head and the base into `refs/foreman/` refs, then pushes with a plain, non-force `git push origin SHA:refs/heads/BASE`, so every landed commit carries the local git identity. A PR that is one commit on the base tip, by the configured `user.email`, with a clean message, lands as that commit (`fast-forward`), and GitHub marks it merged. Any other PR lands as one commit of the `git merge-tree --write-tree` tree on the base tip, with the squash subject and body (`squash`), and land closes the PR with a comment naming that commit. Nothing touches a branch or the working tree of the checkout.
+- A conflict with the base refuses with exit 2 and names the files. A push rejected because the base moved exits 1: base moved; land again. The landing comment is posted after the push, so a refused land posts nothing.
+- `--json` output adds `method`, `squash_reason`, `base` and `pr_state`. `merge` is always the landed commit.
+- Needs git 2.38 or later for `git merge-tree --write-tree`.
+- land refuses unless every push URL of `origin` is the repo, since git honors `remote.origin.pushurl`. A URL counts only over https or ssh on exactly github.com; local paths, `file://` and other hosts refuse. The repo name from origin's fetch URL uses the same parser.
+- In a shallow clone, land's fetch adds `--unshallow`, so merge-tree finds the merge base. A shallow history could otherwise refuse as unrelated histories.
+- A head pushed to the PR after land's push, or while land closes it, leaves the PR and the issue open, and land reopens a PR it closed. A fast-forward PR that GitHub has not marked merged and whose head moved is left open the same way. The landing comment is posted only after the PR is closed or merged at the gated head. land posts a note that the gated head landed and newer commits remain, and exits 2 naming both commits.
+- A dependency on a PR that land closed after pushing its squash counts as done when land's close comment names the PR's base and its current head, was posted by the authenticated gh user, and GitHub's compare shows the landed commit on it. An abandoned closed PR still blocks.
+
+### Removed
+- Config `merge_admin`. land no longer calls `gh pr merge`, so `--admin` has no meaning. A `.foreman.json` that still sets it is refused as an unknown key.
+
 ## [0.1.5] - 2026-10-26
 
 ### Fixed

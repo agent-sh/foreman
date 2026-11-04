@@ -52,7 +52,6 @@ const DEFAULTS = Object.freeze({
   land: null,
   required_checks: [],
   allow_no_checks: false,
-  merge_admin: false,
   review: {
     app: 'revuto-review', rounds_max: 3, no_new_round_for_lows: true,
     trivial_merge: ['title', 'docs', 'small clear fix'],
@@ -122,10 +121,9 @@ function validateConfig(raw, source = '.foreman.json') {
   num('load_hold', (v) => v > 0, 'must be a number > 0');
   num('mem_min_gb', (v) => v >= 0, 'must be a number >= 0');
   num('cpu_pressure_hold', (v) => v >= 0 && v <= 100, 'must be a number from 0 to 100');
-  for (const key of ['allow_no_checks', 'merge_admin']) {
-    if (!(key in raw)) continue;
-    if (typeof raw[key] !== 'boolean') err(key, `must be true or false (got ${JSON.stringify(raw[key])})`);
-    else out[key] = raw[key];
+  if ('allow_no_checks' in raw) {
+    if (typeof raw.allow_no_checks !== 'boolean') err('allow_no_checks', `must be true or false (got ${JSON.stringify(raw.allow_no_checks)})`);
+    else out.allow_no_checks = raw.allow_no_checks;
   }
   num('stale_claim_hours', (v) => v > 0, 'must be a number > 0');
 
@@ -239,9 +237,24 @@ function expandHome(p) {
   return p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p;
 }
 
+/**
+ * OWNER/REPO of a remote URL on exactly github.com, or null. Accepted:
+ * https://github.com/O/R, git@github.com:O/R and ssh://git@github.com[:port]/O/R, each with an
+ * optional .git. Local paths, file://, other transports and other hosts are null.
+ */
 function parseRemote(url) {
-  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url.trim());
-  return m ? `${m[1]}/${m[2]}` : null;
+  const u = url.trim();
+  const tail = '([\\w.-]+)\\/([\\w.-]+?)(?:\\.git)?\\/?';
+  const forms = [
+    new RegExp(`^https:\\/\\/(?:[^@/\\s]+@)?([^/:@\\s]+)\\/${tail}$`, 'i'),
+    new RegExp(`^git@([^/:@\\s]+):${tail}$`, 'i'),
+    new RegExp(`^ssh:\\/\\/git@([^/:@\\s]+)(?::\\d+)?\\/${tail}$`, 'i')
+  ];
+  for (const re of forms) {
+    const m = re.exec(u);
+    if (m && m[1].toLowerCase() === 'github.com' && m[2] !== '.' && m[2] !== '..') return `${m[2]}/${m[3]}`;
+  }
+  return null;
 }
 
 function context(opts) {
@@ -378,6 +391,29 @@ function parseDepends(body, pattern) {
   return { refs, unresolved };
 }
 
+const LANDED_CLOSE = /^Landed on (\S+) as ([0-9a-f]{40}), a squash of ([0-9a-f]{40})\.$/;
+
+/**
+ * A PR that land closed after pushing its squash: closed, not merged, with
+ * land's close comment naming the PR's base and current head, posted by the
+ * gh user running foreman, and the named commit is on the base (GitHub's
+ * compare reports it identical to or behind the base). An abandoned closed PR
+ * has no such comment, names another head, has it only from someone else, or
+ * names a commit the base does not hold, and blocks.
+ */
+function landedClosed(repo, node, viewer) {
+  if (node.state !== 'CLOSED' || !node.comments) return false;
+  const receipts = node.comments.nodes.map((c) => ({ c, m: LANDED_CLOSE.exec((c.body || '').trim()) })).filter((x) => x.m);
+  if (!receipts.length) return false;
+  // Anyone can write that text; only the user foreman runs as counts. Read once per run, when needed.
+  const me = viewer();
+  const m = (receipts.filter((x) => me && x.c.author && (x.c.author.login || '').toLowerCase() === me.toLowerCase()).at(-1) || {}).m;
+  // The squashed head must still be the PR's head: a PR reopened and given newer commits blocks.
+  if (!m || m[1] !== node.baseRefName || m[3] !== (node.headRefOid || '').toLowerCase()) return false;
+  const r = run('gh', ['api', `repos/${repo}/compare/${encodeURIComponent(m[1])}...${m[2]}`, '--jq', '.status'], { allowFail: true });
+  return r.status === 0 && ['identical', 'behind'].includes(r.stdout.trim());
+}
+
 /** One GraphQL call for the state of every referenced issue or PR. */
 function depStates(ctx, refs) {
   const byRepo = new Map();
@@ -393,15 +429,23 @@ function depStates(ctx, refs) {
     const [o, n] = repo.split('/');
     if (!/^[\w.-]+$/.test(o) || !/^[\w.-]+$/.test(n)) throw new Refusal(`bad repo in a dependency: ${repo}`, EXIT.ERROR);
     const items = [...byRepo.get(repo)].map((num) =>
-      `i${num}: issueOrPullRequest(number:${num}){__typename ... on Issue{state} ... on PullRequest{state merged}}`);
+      `i${num}: issueOrPullRequest(number:${num}){__typename ... on Issue{state} ... on PullRequest{state merged baseRefName headRefOid comments(last:50){nodes{body author{login}}}}}`);
     parts.push(`r${i}: repository(owner:"${o}",name:"${n}"){${items.join(' ')}}`);
   });
   const data = ghJson(['api', 'graphql', '-f', `query=query{${parts.join(' ')}}`]).data || {};
   const out = new Map();
+  let login;
+  const viewer = () => {
+    if (login === undefined) {
+      const r = run('gh', ['api', 'user', '-q', '.login'], { allowFail: true });
+      login = r.status === 0 ? r.stdout.trim() : '';
+    }
+    return login;
+  };
   repos.forEach((repo, i) => {
     for (const num of byRepo.get(repo)) {
       const node = data[`r${i}`] && data[`r${i}`][`i${num}`];
-      const done = !!node && (node.__typename === 'PullRequest' ? node.merged === true : node.state === 'CLOSED');
+      const done = !!node && (node.__typename === 'PullRequest' ? node.merged === true || landedClosed(repo, node, viewer) : node.state === 'CLOSED');
       out.set(`${repo}#${num}`, { done, found: !!node });
     }
   });
@@ -1188,6 +1232,98 @@ function landGates(ctx, n, opts) {
   return { pr, p, checks, findings, open, squash };
 }
 
+const outTail = (r) => (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' | ');
+
+/** Block this process for ms milliseconds, with no busy loop. */
+function pause(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+/**
+ * The fast-forward path applies when the PR is one non-merge commit on the base
+ * tip, authored and committed by the configured user.email, and its whole
+ * message (trailers included) passes the comment_forbidden scan. Returns null
+ * when it applies, else the reason the squash path runs.
+ */
+function fastForwardBlocker(ctx, head, parent, g) {
+  const show = g(['show', '-s', '--format=%P%x00%ae%x00%ce%x00%B', head]);
+  if (show.status !== 0) return `cannot read ${head.slice(0, 7)}`;
+  const [parents, author, committer, ...msg] = show.stdout.split('\0');
+  if (parents.trim() !== parent) return 'not one commit on the base tip';
+  const email = g(['config', 'user.email']).stdout.trim().toLowerCase();
+  if (!email) return 'no user.email configured';
+  if (author.trim().toLowerCase() !== email || committer.trim().toLowerCase() !== email) return 'author or committer is not user.email';
+  if (scanText(msg.join('\0'), ctx.config).length) return 'its message has forbidden words';
+  return null;
+}
+
+/**
+ * Land the gated head on the base with a plain, non-force push. ctx.root may be
+ * a checkout other sessions use, so this is plumbing only: the PR head and the
+ * base go to foreman-owned refs, and no branch, index or working tree changes.
+ * fast-forward: the head itself is pushed, and GitHub marks the PR merged.
+ * squash: a commit of the merged tree on the base, with the squash message and
+ * the identity in the git config, is pushed, and the PR is closed with a
+ * comment naming it.
+ */
+function landPush(ctx, pr, p, head, squash, checked) {
+  const base = p.baseRefName;
+  const ns = `refs/foreman/land/${pr}-${process.pid}`;
+  const refs = { head: `${ns}/head`, base: `${ns}/base` };
+  const g = (args, o = {}) => run('git', args, { cwd: ctx.root, allowFail: true, ...o });
+  // git pushes to remote.origin.pushurl when it is set, so every push URL must be ctx.repo.
+  const urls = g(['remote', 'get-url', '--push', '--all', 'origin']).stdout.split('\n').map((u) => u.trim()).filter(Boolean);
+  const foreign = urls.filter((u) => (parseRemote(u) || '').toLowerCase() !== ctx.repo.toLowerCase());
+  if (!urls.length || foreign.length) {
+    throw new Refusal(`origin pushes to ${foreign.join(', ') || 'no URL'}, not ${ctx.repo}; fix remote.origin.pushurl before landing`, EXIT.REFUSED, { push_urls: urls });
+  }
+  try {
+    // A shallow clone may lack the merge base, and merge-tree would refuse unrelated
+    // histories, so the fetch completes the history once. It adds objects only.
+    const shallow = g(['rev-parse', '--is-shallow-repository']).stdout.trim() === 'true';
+    // --refmap= keeps the fetch off remote-tracking refs; only the two refs above change.
+    const f = g(['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--refmap=', ...(shallow ? ['--unshallow'] : []), 'origin',
+      `+refs/pull/${pr}/head:${refs.head}`, `+refs/heads/${base}:${refs.base}`]);
+    if (f.status !== 0) throw new Refusal(`git fetch of PR #${pr} and ${base} failed (exit ${f.status}): ${outTail(f)}`, EXIT.ERROR);
+    const fetched = git(['rev-parse', '--verify', refs.head], { cwd: ctx.root });
+    if (fetched !== head) throw new Refusal(`PR #${pr} head moved to ${fetched} after the gates`, EXIT.REFUSED, { head: fetched });
+    const parent = git(['rev-parse', '--verify', refs.base], { cwd: ctx.root });
+    // The land command checked the merged tree on `checked`; a squash on any other base is unchecked.
+    if (checked && parent !== checked) {
+      throw new Refusal(`${base} moved after the land check (${checked.slice(0, 7)} -> ${parent.slice(0, 7)}): base moved; land again`, EXIT.NOT_NOW, { base: checked, remote: parent });
+    }
+
+    const fallback = fastForwardBlocker(ctx, head, parent, g);
+    let sha = head; let closeText = null;
+    if (fallback) {
+      const mt = g(['merge-tree', '--write-tree', '--name-only', '--no-messages', parent, head]);
+      if (mt.status === 1) {
+        const files = mt.stdout.split('\n').slice(1).map((l) => l.trim()).filter(Boolean);
+        throw new Refusal(`PR #${pr} conflicts with ${base} at ${parent.slice(0, 7)}: ${files.join(', ') || 'no file named'}`, EXIT.REFUSED, { conflicts: files, base: parent });
+      }
+      if (mt.status !== 0) throw new Refusal(`git merge-tree failed (exit ${mt.status}; needs git 2.38+): ${outTail(mt)}`, EXIT.ERROR);
+      const tree = mt.stdout.split('\n')[0].trim();
+      const message = `${squash.subject}\n${squash.body ? `\n${squash.body}\n` : ''}`;
+      sha = git(['commit-tree', tree, '-p', parent, '-F', '-'], { cwd: ctx.root, input: message });
+      closeText = `Landed on ${base} as ${sha}, a squash of ${head}.`;
+      assertClean(closeText, ctx.config, 'close comment');
+    }
+
+    // The PR head at push time must still be the gated head.
+    const now = ghJson(['pr', 'view', String(pr), ...ctx.R, '--json', 'headRefOid']).headRefOid;
+    if (now !== head) throw new Refusal(`PR #${pr} head moved to ${now} before the push`, EXIT.REFUSED, { head: now });
+    const push = g(['push', '--quiet', 'origin', `${sha}:refs/heads/${base}`]);
+    if (push.status !== 0) {
+      const remote = lsRemote(ctx, base);
+      if (remote !== parent) {
+        throw new Refusal(`${base} moved during the push (${parent.slice(0, 7)} -> ${remote ? remote.slice(0, 7) : 'gone'}): base moved; land again`, EXIT.NOT_NOW, { base: parent, remote });
+      }
+      throw new Refusal(`git push of ${sha.slice(0, 7)} to ${base} failed (exit ${push.status}): ${outTail(push)}`, EXIT.REFUSED);
+    }
+    return { method: fallback ? 'squash' : 'fast-forward', why_squash: fallback, sha, base: parent, closeText };
+  } finally {
+    for (const r of Object.values(refs)) g(['update-ref', '-d', r]);
+  }
+}
+
 function cmdLand(ctx, opts) {
   const n = needInt(opts._[0], 'issue number');
   const commentText = opts['comment-file'] ? fs.readFileSync(opts['comment-file'], 'utf8') : (opts.comment || null);
@@ -1200,7 +1336,7 @@ function cmdLand(ctx, opts) {
   }
 
   // Step 2 and 5: the land command, rerun once when main moves under it.
-  let landLog = null; let receipts = null;
+  let landLog = null; let receipts = null; let checked = null;
   if (ctx.config.land) {
     const dir = scratchDir(ctx, n);
     receipts = path.join(dir, 'evidence', `land-${head.slice(0, 7)}`);
@@ -1217,31 +1353,55 @@ function cmdLand(ctx, opts) {
         throw new Refusal(`land command exit ${rc} (log ${landLog}):\n${tail}`, EXIT.REFUSED, { log: landLog, receipts });
       }
       const after = lsRemote(ctx, p.baseRefName);
-      if (after === before) break;
+      if (after === before) { checked = after; break; }
       if (attempt >= 2) throw new Refusal(`${p.baseRefName} moved during the land check twice (${before.slice(0, 7)} -> ${after.slice(0, 7)}); land again later`, EXIT.REFUSED, { log: landLog });
     }
     const now = ghJson(['pr', 'view', String(pr), ...ctx.R, '--json', 'headRefOid']).headRefOid;
     if (now !== head) throw new Refusal(`PR #${pr} head moved to ${now} during the land check`);
   }
 
-  // Step 3 and 4: post the review comment, then squash at the exact head.
+  // Step 3 and 4: squash the exact head onto the base and push it, then post the comment.
+  const landed = landPush(ctx, pr, p, head, g.squash, checked);
+  // A push to the PR after the pre-push check: the gated head landed, newer commits did not.
+  // The PR and the issue stay open, with a note, and land exits 2 naming both commits.
+  const view = () => ghJson(['pr', 'view', String(pr), ...ctx.R, '--json', 'headRefOid,state']);
+  const leaveOpen = (now, reopen) => {
+    if (reopen) gh(['pr', 'reopen', String(pr), ...ctx.R]);
+    const note = `The gated head ${head} landed on ${p.baseRefName} as ${landed.sha}. Newer commits up to ${now} are not on ${p.baseRefName}, so this PR and its issue stay open.`;
+    if (!scanText(note, ctx.config).length) gh(['pr', 'comment', String(pr), ...ctx.R, '--body-file', '-'], { input: note });
+    return new Refusal(`PR #${pr} head moved to ${now} after ${head} landed on ${p.baseRefName} as ${landed.sha}; the PR and issue stay open`, EXIT.REFUSED,
+      { head: now, landed: landed.sha, method: landed.method, base: landed.base });
+  };
+  let pv = view();
+  let prState = pv.state;
+  if (landed.method === 'squash') {
+    // Read just before the close, close, then read again: a push during the close reopens it.
+    if (pv.headRefOid !== head) throw leaveOpen(pv.headRefOid, false);
+    gh(['pr', 'close', String(pr), ...ctx.R, '--comment', landed.closeText]);
+    pv = view();
+    if (pv.headRefOid !== head) throw leaveOpen(pv.headRefOid, true);
+    prState = pv.state;
+  } else {
+    // GitHub marks the PR merged only while its head is the pushed commit; read it again once if it lags.
+    if (prState !== 'MERGED' && pv.headRefOid === head) { pause(5000); pv = view(); prState = pv.state; }
+    if (prState !== 'MERGED' && pv.headRefOid !== head) throw leaveOpen(pv.headRefOid, false);
+    if (prState !== 'MERGED') process.stderr.write(`[WARN] PR #${pr} is ${prState} after its head reached ${p.baseRefName}; GitHub has not marked it merged yet\n`);
+  }
+  // The landing comment goes last, once the PR is closed or merged at the gated head.
   if (commentText) gh(['pr', 'comment', String(pr), ...ctx.R, '--body-file', '-'], { input: commentText });
-  gh(['pr', 'merge', String(pr), ...ctx.R, '--squash', '--match-head-commit', head, ...(ctx.config.merge_admin ? ['--admin'] : []),
-    '--subject', g.squash.subject, '--body-file', '-'], { input: g.squash.body });
-  const merged = ghJson(['pr', 'view', String(pr), ...ctx.R, '--json', 'mergeCommit,state']);
-  const mergeSha = merged.mergeCommit && merged.mergeCommit.oid;
+  const mergeSha = landed.sha;
 
-  // Step 6: close the issue with a comment that links the merge.
+  // Step 6: close the issue with a comment that links the landed commit.
   const issue = viewIssue(ctx, n, 'number,state,labels,assignees');
   const decided = opts['decided-by-session']
     ? ` ${ctx.config.review.app} was ${g.findings.capped ? 'capped' : 'unavailable'}; the session judged it from the land check and the diff.`
     : opts.trivial && !g.findings.reviewed_head ? ' No new review round: title, doc or small clear fix.' : '';
-  comment(ctx, 'issue', n, `Landed by #${pr} as ${mergeSha || head}.${decided}`);
+  comment(ctx, 'issue', n, `Landed by #${pr} as ${mergeSha}.${decided}`);
   setStatus(ctx, issue, null);
   if (issue.state === 'OPEN') gh(['issue', 'close', String(n), ...ctx.R]);
   return {
-    result: { issue: n, pr, head, merge: mergeSha, log: landLog, receipts, decided_by_session: !!opts['decided-by-session'] },
-    text: `#${n} landed: PR #${pr} merged as ${mergeSha ? mergeSha.slice(0, 7) : '?'}${landLog ? `\n  land log: ${landLog}\n  receipts: ${receipts}` : ''}`
+    result: { issue: n, pr, head, merge: mergeSha, method: landed.method, squash_reason: landed.why_squash, pr_state: prState, base: landed.base, log: landLog, receipts, decided_by_session: !!opts['decided-by-session'] },
+    text: `#${n} landed: PR #${pr} pushed to ${p.baseRefName} as ${mergeSha.slice(0, 7)} (${landed.method}${landed.why_squash ? `: ${landed.why_squash}` : ''})${landLog ? `\n  land log: ${landLog}\n  receipts: ${receipts}` : ''}`
   };
 }
 

@@ -33,8 +33,9 @@ test('config: errors name the key; unknown keys and bad values are refused', () 
     [{ comment_forbidden: '(' }, /comment_forbidden is not a valid regex/],
     [{ review: { rounds_max: 0 } }, /review\.rounds_max must be an integer >= 1/],
     [{ long_runs: 'sh -c {cmd}' }, /long_runs must contain \{unit\}, \{cmd\} and \{log\}/],
-    [{ merge_admin: 'yes' }, /merge_admin must be true or false/],
+    [{ merge_admin: false }, /merge_admin is not a foreman key/],
     [{ allow_no_checks: 1 }, /allow_no_checks must be true or false/],
+    [{ github_host: 'github.com' }, /github_host is not a foreman key/],
     [{ cpu_pressure_hold: 120 }, /cpu_pressure_hold must be a number from 0 to 100/],
     ['{ not json', /not valid JSON/]
   ];

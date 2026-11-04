@@ -46,22 +46,38 @@ function landSetup({ pr = {}, refs = [M1], config = {}, fixture = {} } = {}) {
   return t;
 }
 
+// The squash commit land pushed, split into subject and body.
+function pushed(t) {
+  const x = t.fx().pushed;
+  if (!x) return undefined;
+  const [subject, ...rest] = x.message.replace(/\n$/, '').split('\n');
+  return { ...x, subject, body: rest.join('\n').trim() };
+}
+
 const land = (t, ...extra) => t.run(['land', '20', '--pr', '7', '--head', HEAD.slice(0, 7), ...extra]);
 
-test('land: green head merges at the exact SHA with no attribution trailer, then closes the issue', () => {
+test('land: green head is squashed onto the base and pushed, then the PR and the issue close', () => {
   const t = landSetup();
   const r = land(t, '--comment-file', t.comment('Reviewed: no findings.'));
   assert.equal(r.code, 0, r.stderr);
   const fx = t.fx();
-  assert.equal(fx.merged.pr, 7);
-  assert.ok(fx.merged.args.includes('--match-head-commit') && fx.merged.args.includes(HEAD));
-  assert.equal(fx.merged.subject, 'Fix the widget (#7)');
-  assert.doesNotMatch(fx.merged.body, /co-authored-by/i);
-  assert.equal(fx.prs[0].comments[0].body, 'Reviewed: no findings.');
+  const sq = pushed(t);
+  const sha = sq.sha;
+  assert.equal(sq.branch, 'main');
+  assert.deepEqual(sq.parents, [M1]);
+  assert.equal(sq.tree, 'e'.repeat(40));
+  assert.deepEqual(fx.refs.main, [sha]);
+  assert.equal(sq.subject, 'Fix the widget (#7)');
+  assert.equal(sq.body, 'Fix the widget\n\nBody line.');
+  assert.equal(fx.prs[0].comments[1].body, 'Reviewed: no findings.');
+  assert.equal(fx.prs[0].state, 'CLOSED');
+  assert.equal(fx.prs[0].comments[0].body, `Landed on main as ${sha}, a squash of ${HEAD}.`);
   assert.equal(fx.issues[0].state, 'CLOSED');
   assert.deepEqual(fx.issues[0].labels, []);
-  assert.match(fx.issues[0].comments.at(-1).body, /Landed by #7 as f00dfeed/);
+  assert.match(fx.issues[0].comments.at(-1).body, new RegExp(`Landed by #7 as ${sha}`));
+  assert.deepEqual(fx.git.refs, {}, 'the foreman refs are removed');
   assert.equal(t.runs(), 1);
+  assert.ok(!fx.calls.some((c) => c.startsWith('pr merge')), 'no GitHub merge');
 });
 
 test('land: refuses a moved head, a cancelled check, a red check; waits on pending and on no checks', () => {
@@ -78,7 +94,7 @@ test('land: refuses a moved head, a cancelled check, a red check; waits on pendi
     const x = land(t);
     assert.equal(x.code, code, x.stderr);
     assert.match(x.stderr, want);
-    assert.equal(t.fx().merged, undefined);
+    assert.equal(t.fx().pushed, undefined);
     assert.equal(t.runs(), 0);
   }
 });
@@ -109,19 +125,7 @@ test('land: the squash body drops only attribution trailers and the Claude Code 
     }
   });
   assert.equal(land(t).code, 0);
-  assert.equal(t.fx().merged.body, 'Regenerate the API docs\n\nDocs generated with gen-docs from the schema.');
-});
-
-test('land: merge_admin adds --admin to the merge; the other guards still apply', () => {
-  const plain = landSetup();
-  assert.equal(land(plain).code, 0);
-  assert.ok(!plain.fx().merged.args.includes('--admin'));
-  const admin = landSetup({ config: { merge_admin: true } });
-  assert.equal(land(admin).code, 0);
-  assert.ok(admin.fx().merged.args.includes('--admin'));
-  const guarded = landSetup({ config: { merge_admin: true }, pr: { reviewThreads: [finding()] } });
-  assert.equal(land(guarded).code, 2);
-  assert.equal(guarded.fx().merged, undefined);
+  assert.equal(pushed(t).body, 'Regenerate the API docs\n\nDocs generated with gen-docs from the schema.');
 });
 
 test('land: an unaddressed Revuto finding refuses; a reply addresses it', () => {
@@ -129,7 +133,7 @@ test('land: an unaddressed Revuto finding refuses; a reply addresses it', () => 
   const r = land(t);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /1 unaddressed revuto-review finding\(s\): P1 src\/w\.js:12/);
-  assert.equal(t.fx().merged, undefined);
+  assert.equal(t.fx().pushed, undefined);
 
   const replied = finding();
   replied.comments.push({ databaseId: 51, author: { login: 'owner' }, body: 'Fixed in the loop guard.', createdAt: ago(1) });
@@ -158,7 +162,7 @@ test('land: main moving during the check reruns it once, and twice refuses', () 
   assert.equal(r.code, 2);
   assert.match(r.stderr, /moved during the land check twice/);
   assert.equal(twice.runs(), 2);
-  assert.equal(twice.fx().merged, undefined);
+  assert.equal(twice.fx().pushed, undefined);
 });
 
 test('land: a failing land command and a head pushed during the check refuse', () => {
@@ -244,7 +248,7 @@ test('land: merge commits stay out of the squash body', () => {
   });
   const r = land(t);
   assert.equal(r.code, 0, r.stderr);
-  assert.equal(t.fx().merged.body, 'Fix the widget\n\nBody line.\n\nCover the reset');
+  assert.equal(pushed(t).body, 'Fix the widget\n\nBody line.\n\nCover the reset');
 });
 
 test('land: a forbidden word in the squash subject or body refuses before anything changes', () => {
@@ -257,7 +261,7 @@ test('land: a forbidden word in the squash subject or body refuses before anythi
   assert.equal(r.code, 2, r.stderr);
   assert.match(r.stderr, /squash body has forbidden words: "Opus", "manager" in commit aaaaaaa "Reset the gauge"/);
   const fx = t.fx();
-  assert.equal(fx.merged, undefined);
+  assert.equal(fx.pushed, undefined);
   assert.equal(fx.prs[0].comments.length, 0);
   assert.equal(fx.issues[0].comments.length, 1);
   assert.equal(fx.issues[0].state, 'OPEN');
@@ -268,8 +272,87 @@ test('land: a forbidden word in the squash subject or body refuses before anythi
   const tr = land(title);
   assert.equal(tr.code, 2);
   assert.match(tr.stderr, /squash subject has forbidden words: "worker" in the PR title/);
-  assert.equal(title.fx().merged, undefined);
+  assert.equal(title.fx().pushed, undefined);
 
   const allowed = landSetup({ pr: { commits }, config: { comment_allowed: ['Opus manager'] } });
   assert.equal(land(allowed).code, 0);
+});
+
+test('land: a push URL that is not the repo refuses before anything is fetched or pushed', () => {
+  for (const pushUrls of [
+    ['https://github.com/evil/widgets.git'], ['https://github.com/acme/widgets.git', 'git@github.com:evil/widgets.git'], ['/srv/mirror.git'],
+    ['/srv/mirrors/github.com/acme/widgets.git'], ['https://notgithub.com/acme/widgets.git'], ['file:///srv/github.com/acme/widgets.git'],
+    ['https://github.com.evil.example/acme/widgets.git'], ['git@evil.example:acme/widgets.git']
+  ]) {
+    const t = landSetup({ fixture: { git: { pushUrls } } });
+    const r = land(t, '--comment-file', t.comment('Reviewed.'));
+    assert.equal(r.code, 2, r.stderr);
+    assert.match(r.stderr, /origin pushes to .+, not acme\/widgets; fix remote.origin.pushurl/);
+    const fx = t.fx();
+    assert.equal(fx.pushed, undefined);
+    assert.equal(fx.git.fetches, undefined);
+    assert.equal(fx.prs[0].state, 'OPEN');
+    assert.equal(fx.prs[0].comments.length, 0);
+  }
+  for (const url of ['git@github.com:Acme/widgets.git', 'ssh://git@github.com/acme/widgets', 'https://github.com/acme/widgets']) {
+    const ok = landSetup({ fixture: { git: { pushUrls: [url] } } });
+    assert.equal(land(ok).code, 0, `${url} is the same repo`);
+  }
+  const ghe = landSetup({ fixture: { git: { pushUrls: ['https://ghe.example.com/acme/widgets.git'] } } });
+  assert.equal(land(ghe).code, 2, 'only github.com counts');
+});
+
+test('land: a head pushed to the PR after the push leaves the PR and issue open and names both commits', () => {
+  const later = 'd'.repeat(40);
+  const t = landSetup({ fixture: { git: { headMovesAfterPush: { pr: 7, to: later } } } });
+  const r = land(t, '--comment-file', t.comment('Reviewed: no findings.'));
+  assert.equal(r.code, 2, r.stderr);
+  const fx = t.fx();
+  const sha = fx.pushed.sha;
+  assert.match(r.stderr, new RegExp(`head moved to ${later} after ${HEAD} landed on main as ${sha}; the PR and issue stay open`));
+  assert.equal(fx.prs[0].state, 'OPEN');
+  assert.equal(fx.prs[0].comments.length, 1, 'only the note, not the landing comment');
+  assert.match(fx.prs[0].comments[0].body, new RegExp(`gated head ${HEAD} landed on main as ${sha}\\. Newer commits up to ${later}`));
+  assert.equal(fx.issues[0].state, 'OPEN');
+  assert.deepEqual(fx.issues[0].labels, ['status:review']);
+  assert.equal(fx.issues[0].comments.length, 1);
+});
+
+test('land squash: a head pushed while the PR closes reopens it and leaves the issue open', () => {
+  const later = 'd'.repeat(40);
+  const t = landSetup({ fixture: { headMovesOnClose: later } });
+  const r = land(t, '--comment-file', t.comment('Reviewed: no findings.'));
+  assert.equal(r.code, 2, r.stderr);
+  const fx = t.fx();
+  const sha = fx.pushed.sha;
+  assert.match(r.stderr, new RegExp(`head moved to ${later} after ${HEAD} landed on main as ${sha}; the PR and issue stay open`));
+  assert.equal(fx.reopened, 1);
+  assert.equal(fx.prs[0].state, 'OPEN');
+  assert.ok(!fx.prs[0].comments.some((c) => c.body === 'Reviewed: no findings.'), 'no landing comment');
+  assert.match(fx.prs[0].comments.at(-1).body, new RegExp(`Newer commits up to ${later}`));
+  assert.equal(fx.issues[0].state, 'OPEN');
+  assert.deepEqual(fx.issues[0].labels, ['status:review']);
+  assert.equal(fx.issues[0].comments.length, 1);
+});
+
+test('land fast-forward: a head pushed before GitHub marks the PR merged leaves the PR and issue open', () => {
+  const later = 'd'.repeat(40);
+  const t = landSetup({
+    fixture: {
+      git: { email: 'lander@example.com', noAutoMerge: true, objects: { [HEAD]: { parents: [M1], ae: 'lander@example.com', ce: 'lander@example.com', message: 'Fix the widget\n' } } },
+      // Views: gates, after the land command, before the push, after the push; the head moves on the next.
+      headMovesAtView: { n: 5, to: later }
+    }
+  });
+  const r = land(t, '--comment-file', t.comment('Reviewed: no findings.'));
+  assert.equal(r.code, 2, r.stderr);
+  assert.match(r.stderr, new RegExp(`head moved to ${later} after ${HEAD} landed on main as ${HEAD}`));
+  const fx = t.fx();
+  assert.deepEqual(fx.refs.main, [HEAD], 'the fast-forward pushed the head');
+  assert.equal(fx.prs[0].state, 'OPEN');
+  assert.ok(!fx.calls.some((c) => c.startsWith('pr close')));
+  assert.ok(!fx.prs[0].comments.some((c) => c.body === 'Reviewed: no findings.'), 'no landing comment');
+  assert.match(fx.prs[0].comments.at(-1).body, new RegExp(`Newer commits up to ${later}`));
+  assert.equal(fx.issues[0].state, 'OPEN');
+  assert.deepEqual(fx.issues[0].labels, ['status:review']);
 });

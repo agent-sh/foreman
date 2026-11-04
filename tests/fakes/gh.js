@@ -51,6 +51,8 @@ fx.calls.push(argv.filter((a) => !a.startsWith('query=')).join(' '));
 
 if (a0 === '--version') { process.stdout.write('gh version 2.99.0 (fake)\n'); save(); process.exit(0); }
 if (a0 === 'auth' && a1 === 'status') { save(); process.exit(fx.auth === false ? 1 : 0); }
+// gh api user -q .login: the authenticated login; fx.userCalls counts the reads.
+if (a0 === 'api' && a1 === 'user') { fx.userCalls = (fx.userCalls || 0) + 1; process.stdout.write(`${fx.user}\n`); save(); process.exit(0); }
 if (a0 === 'repo' && a1 === 'view') { out({ nameWithOwner: fx.repo }); save(); process.exit(0); }
 
 if (a0 === 'label' && a1 === 'list') { out(fx.labels.map((name) => ({ name }))); save(); process.exit(0); }
@@ -104,6 +106,11 @@ if (a0 === 'pr' && a1 === 'view') {
   // A push during the land check: the second view shows the new head.
   if (fx.headMovesTo && fx.prViews === undefined) fx.prViews = 0;
   if (fx.headMovesTo && ++fx.prViews > 1) view.headRefOid = fx.headMovesTo;
+  // headMovesAtView { n, to }: from the n-th pr view on, the PR head is `to`.
+  if (fx.headMovesAtView) {
+    fx.prViewsAt = (fx.prViewsAt || 0) + 1;
+    if (fx.prViewsAt >= fx.headMovesAtView.n) { p.headRefOid = fx.headMovesAtView.to; view.headRefOid = p.headRefOid; delete fx.headMovesAtView; }
+  }
   out(pick(view, flag('--json'))); save(); process.exit(0);
 }
 if (a0 === 'pr' && a1 === 'comment') {
@@ -112,12 +119,21 @@ if (a0 === 'pr' && a1 === 'comment') {
   p.comments.push({ author: { login: fx.user }, body: stdin(), createdAt: now() });
   save(); process.exit(0);
 }
-if (a0 === 'pr' && a1 === 'merge') {
+if (a0 === 'pr' && a1 === 'close') {
   const p = pr(argv[2]);
-  if (flag('--match-head-commit') !== p.headRefOid) fail('head commit does not match');
-  p.state = 'MERGED';
-  p.mergeCommit = { oid: 'f00dfeed'.padEnd(40, '0') };
-  fx.merged = { pr: p.number, subject: flag('--subject'), body: stdin(), args: argv.slice(1) };
+  if (p.state !== 'OPEN') fail(`pull request #${p.number} is already ${p.state.toLowerCase()}`);
+  p.state = 'CLOSED';
+  p.comments = p.comments || [];
+  if (flag('--comment')) p.comments.push({ author: { login: fx.user }, body: flag('--comment'), createdAt: now() });
+  // headMovesOnClose: someone pushes to the PR while the close request runs.
+  if (fx.headMovesOnClose) { p.headRefOid = fx.headMovesOnClose; delete fx.headMovesOnClose; }
+  save(); process.exit(0);
+}
+if (a0 === 'pr' && a1 === 'reopen') {
+  const p = pr(argv[2]);
+  if (p.state !== 'CLOSED') fail(`pull request #${p.number} is ${p.state.toLowerCase()}`);
+  p.state = 'OPEN';
+  fx.reopened = (fx.reopened || 0) + 1;
   save(); process.exit(0);
 }
 
@@ -129,7 +145,8 @@ if (a0 === 'api' && a1 === 'graphql') {
     const all = [...fx.issues.map((i) => ({ ...i, repo: i.repo || fx.repo, kind: 'Issue' })), ...fx.prs.map((p) => ({ ...p, repo: p.repo || fx.repo, kind: 'PullRequest' }))];
     const x = all.find((i) => i.repo === repo && i.number === n);
     if (!x) return null;
-    return x.kind === 'Issue' ? { __typename: 'Issue', state: x.state } : { __typename: 'PullRequest', state: x.state, merged: x.state === 'MERGED' };
+    return x.kind === 'Issue' ? { __typename: 'Issue', state: x.state }
+      : { __typename: 'PullRequest', state: x.state, merged: x.state === 'MERGED', baseRefName: x.baseRefName || 'main', headRefOid: x.headRefOid || null, comments: { nodes: (x.comments || []).map((c) => ({ body: c.body, author: { login: c.author || fx.user } })) } };
   };
   if (query.includes('issueOrPullRequest')) {
     const data = {};
@@ -206,6 +223,13 @@ function checkSuites(p) {
   return [...bySlug].map(([slug, runs]) => ({ app: { slug }, checkRuns: { nodes: runs } }));
 }
 
+// compare BASE...SHA serves fx.compare["BASE...SHA"] (identical, behind, ahead, diverged); unknown is a 404.
+if (a0 === 'api' && /^repos\/[^/]+\/[^/]+\/compare\//.test(a1)) {
+  const key = decodeURIComponent(a1.split('/compare/')[1]);
+  const status = (fx.compare || {})[key];
+  if (!status) fail('gh: Not Found (HTTP 404)');
+  process.stdout.write(`${status}\n`); save(); process.exit(0);
+}
 if (a0 === 'api' && /^repos\/[^/]+\/[^/]+\/branches\//.test(a1)) {
   const b = decodeURIComponent(a1.split('/branches/')[1]);
   const br = (fx.branches || {})[b];

@@ -57,8 +57,10 @@ Revuto reviews every push on its own. Its rounds are capped per PR (`review.roun
 ## Land
 1. Write the landing comment to `<scratch>/land-comment.md` (scratch is the path `brief` printed): what the PR does, the findings fixed or answered, the check result.
 2. Run `F land N --pr P --head SHA --comment-file <scratch>/land-comment.md`, plus `--trivial` or `--decided-by-session` when step 2 or 3 of Review applies. Run it with `run_in_background: true` when the repo's land command takes minutes.
-3. land runs the configured land command and reruns it once if main moves. Then it posts the comment, squash-merges at SHA and closes the issue. On exit 2:
+3. land runs the configured land command and reruns it once if main moves. Then it pushes SHA to the base as a fast-forward, or a squash of SHA made with the local git identity, posts the comment and closes the issue. The output names the method. On exit 1 with "base moved; land again", run the same land command again. On exit 2:
    - **Head moved:** read `findings` again, then land with the new SHA.
+   - **Head moved after SHA landed:** SHA is on the base and the PR stays open with the newer commits. Rebase the branch onto the base, then review and land the new head as usual.
+   - **origin pushes to another repo:** report it. The operator fixes `remote.origin.pushurl`.
    - **Check red:** run `F release N --to rework --reason "<check>: <failure>"`.
    - **Check cancelled:** rerun it once with `gh run rerun <run-id> --failed`. A cancelled check is never green.
    - **No checks at the head:** CI may not have started. Run the gate again once, a few minutes later. If there are still no checks, report it: only the repo's `allow_no_checks` setting lets such a PR land.
@@ -66,6 +68,7 @@ Revuto reviews every push on its own. Its rounds are capped per PR (`review.roun
    - **Forbidden words in the comment:** rewrite the comment.
    - **Forbidden words in the squash subject or body:** the message names the PR title or the commit. Retitle with `gh pr edit P --title "..."`. For a commit, run `F release N --to rework --reason "reword commit <sha7>"`.
    - **Main moved twice:** land again later.
+   - **Conflicts with the base:** run `F release N --to rework --reason "rebase onto <base>: <files>"`.
    - **Land command failed:** read the log path it printed, then send the issue to rework.
 
 ## Rules

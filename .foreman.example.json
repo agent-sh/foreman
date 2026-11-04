@@ -21,7 +21,6 @@
   "land": "sh tools/native-land-check.sh {issue} {pr} {head}",
   "required_checks": ["CodeQL"],
   "allow_no_checks": false,
-  "merge_admin": false,
   "review": {
     "app": "revuto-review",
     "rounds_max": 3,
